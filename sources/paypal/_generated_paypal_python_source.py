@@ -344,9 +344,16 @@ def register_lakeflow_source(spark):
             """
             List names of all tables supported by this connector.
 
-            Supports: transactions, invoices, subscriptions, orders
+            Currently returns: transactions, subscriptions
+
+            Note: 'invoices' table requires Invoicing API permissions (not available
+            with basic sandbox credentials). The table is fully implemented but not 
+            listed by default. Users with proper permissions can access it directly.
+
+            Note: 'orders' table is not included because PayPal Orders API v2 
+            does not support bulk listing. Use 'transactions' table instead.
             """
-            return ["transactions", "invoices", "subscriptions", "orders"]
+            return ["transactions", "subscriptions"]
 
         def get_table_schema(
             self, table_name: str, table_options: dict[str, str]
@@ -364,12 +371,20 @@ def register_lakeflow_source(spark):
             if table_name not in self.list_tables():
                 raise ValueError(f"Unsupported table: {table_name!r}")
 
+            # Common struct types used across multiple tables
+            amount_struct = StructType([
+                StructField("currency_code", StringType(), True),
+                StructField("value", StringType(), True),
+            ])
+
+            address_struct = StructType([
+                StructField("line1", StringType(), True),
+                StructField("city", StringType(), True),
+                StructField("country_code", StringType(), True),
+                StructField("postal_code", StringType(), True),
+            ])
+
             if table_name == "transactions":
-                # Define nested struct types
-                amount_struct = StructType([
-                    StructField("currency_code", StringType(), True),
-                    StructField("value", StringType(), True),
-                ])
 
                 payer_name_struct = StructType([
                     StructField("given_name", StringType(), True),
@@ -383,13 +398,6 @@ def register_lakeflow_source(spark):
                     StructField("payer_status", StringType(), True),
                     StructField("payer_name", payer_name_struct, True),
                     StructField("country_code", StringType(), True),
-                ])
-
-                address_struct = StructType([
-                    StructField("line1", StringType(), True),
-                    StructField("city", StringType(), True),
-                    StructField("country_code", StringType(), True),
-                    StructField("postal_code", StringType(), True),
                 ])
 
                 shipping_info_struct = StructType([
@@ -891,6 +899,13 @@ def register_lakeflow_source(spark):
 
             # Make API request
             response = self._make_request("GET", "/v2/invoicing/invoices", params)
+
+            if response.status_code == 403:
+                raise RuntimeError(
+                    f"PayPal Invoicing API requires specific permissions. "
+                    f"Please enable Invoicing API access for your PayPal app in the Developer Dashboard. "
+                    f"Error: {response.status_code} {response.text}"
+                )
 
             if response.status_code != 200:
                 raise RuntimeError(

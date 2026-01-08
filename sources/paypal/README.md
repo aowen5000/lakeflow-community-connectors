@@ -87,9 +87,14 @@ A Unity Catalog connection for this connector can be created in two ways:
 The PayPal connector supports the following tables:
 
 1. **`transactions`** - Transaction history (fully functional)
-2. **`invoices`** - Invoice data (functional)
-3. **`subscriptions`** - Subscription data (limited - may require plan_id)
-4. **`orders`** - Order data (not available - use transactions instead)
+2. **`subscriptions`** - Subscription data (functional - may require plan_id)
+3. **`invoices`** - Invoice data (functional but requires special API permissions - see below)
+
+**Available by Default**: `transactions`, `subscriptions`
+
+**Additional Tables (requires configuration)**:
+- **`invoices`** - Fully implemented but requires Invoicing API permissions. Not included in `list_tables()` by default because basic sandbox credentials lack these permissions. Users with proper permissions can access this table directly.
+- **`orders`** - Not available (PayPal Orders API v2 does not support bulk listing). Use the `transactions` table instead for order and payment history.
 
 ### `transactions` Table
 
@@ -136,6 +141,8 @@ The `transactions` table includes nested structures for comprehensive transactio
 ### `invoices` Table
 
 The **`invoices`** table provides invoice data from your PayPal account using the Invoicing API v2.
+
+**⚠️ API Permissions Required**: The Invoicing API requires specific permissions. Basic sandbox credentials may return a 403 error. Ensure your PayPal app has Invoicing API access enabled in the PayPal Developer Dashboard.
 
 **Primary Key**: `id`
 
