@@ -150,9 +150,9 @@ class LakeflowConnect:
         """
         List names of all tables supported by this connector.
         
-        Currently supports only the 'transactions' table.
+        Supports: transactions, invoices, subscriptions, orders
         """
-        return ["transactions"]
+        return ["transactions", "invoices", "subscriptions", "orders"]
 
     def get_table_schema(
         self, table_name: str, table_options: dict[str, str]
@@ -244,6 +244,237 @@ class LakeflowConnect:
             
             return transactions_schema
 
+        if table_name == "invoices":
+            # Invoice schema based on PayPal Invoicing API v2
+            invoice_detail_struct = StructType([
+                StructField("invoice_number", StringType(), True),
+                StructField("reference", StringType(), True),
+                StructField("invoice_date", StringType(), True),
+                StructField("currency_code", StringType(), True),
+                StructField("note", StringType(), True),
+                StructField("term", StringType(), True),
+                StructField("memo", StringType(), True),
+            ])
+            
+            invoicer_struct = StructType([
+                StructField("name", StringType(), True),
+                StructField("email_address", StringType(), True),
+                StructField("phones", ArrayType(StructType([
+                    StructField("country_code", StringType(), True),
+                    StructField("national_number", StringType(), True),
+                    StructField("phone_type", StringType(), True),
+                ]), True), True),
+                StructField("website", StringType(), True),
+                StructField("tax_id", StringType(), True),
+                StructField("logo_url", StringType(), True),
+            ])
+            
+            primary_recipient_struct = StructType([
+                StructField("billing_info", StructType([
+                    StructField("email_address", StringType(), True),
+                    StructField("language", StringType(), True),
+                ]), True),
+                StructField("shipping_info", StructType([
+                    StructField("name", StringType(), True),
+                    StructField("address", address_struct, True),
+                ]), True),
+            ])
+            
+            item_struct = StructType([
+                StructField("name", StringType(), True),
+                StructField("description", StringType(), True),
+                StructField("quantity", StringType(), True),
+                StructField("unit_amount", amount_struct, True),
+                StructField("tax", StructType([
+                    StructField("name", StringType(), True),
+                    StructField("percent", StringType(), True),
+                    StructField("amount", amount_struct, True),
+                ]), True),
+                StructField("item_date", StringType(), True),
+                StructField("discount", StructType([
+                    StructField("percent", StringType(), True),
+                    StructField("amount", amount_struct, True),
+                ]), True),
+            ])
+            
+            amount_summary_struct = StructType([
+                StructField("currency_code", StringType(), True),
+                StructField("value", StringType(), True),
+            ])
+            
+            invoices_schema = StructType([
+                StructField("id", StringType(), False),
+                StructField("parent_id", StringType(), True),
+                StructField("status", StringType(), True),
+                StructField("detail", invoice_detail_struct, True),
+                StructField("invoicer", invoicer_struct, True),
+                StructField("primary_recipients", ArrayType(primary_recipient_struct, True), True),
+                StructField("items", ArrayType(item_struct, True), True),
+                StructField("amount", StructType([
+                    StructField("breakdown", StructType([
+                        StructField("item_total", amount_summary_struct, True),
+                        StructField("discount", amount_summary_struct, True),
+                        StructField("tax_total", amount_summary_struct, True),
+                        StructField("shipping", amount_summary_struct, True),
+                    ]), True),
+                ]), True),
+                StructField("due_amount", amount_summary_struct, True),
+                StructField("gratuity", amount_summary_struct, True),
+                StructField("links", ArrayType(StructType([
+                    StructField("href", StringType(), True),
+                    StructField("rel", StringType(), True),
+                    StructField("method", StringType(), True),
+                ]), True), True),
+            ])
+            
+            return invoices_schema
+
+        if table_name == "subscriptions":
+            # Subscription schema based on PayPal Subscriptions API v1
+            billing_info_struct = StructType([
+                StructField("outstanding_balance", amount_struct, True),
+                StructField("cycle_executions", ArrayType(StructType([
+                    StructField("tenure_type", StringType(), True),
+                    StructField("sequence", LongType(), True),
+                    StructField("cycles_completed", LongType(), True),
+                    StructField("cycles_remaining", LongType(), True),
+                    StructField("total_cycles", LongType(), True),
+                ]), True), True),
+                StructField("last_payment", StructType([
+                    StructField("amount", amount_struct, True),
+                    StructField("time", StringType(), True),
+                ]), True),
+                StructField("next_billing_time", StringType(), True),
+                StructField("final_payment_time", StringType(), True),
+                StructField("failed_payments_count", LongType(), True),
+            ])
+            
+            subscriber_struct = StructType([
+                StructField("email_address", StringType(), True),
+                StructField("payer_id", StringType(), True),
+                StructField("name", StructType([
+                    StructField("given_name", StringType(), True),
+                    StructField("surname", StringType(), True),
+                ]), True),
+                StructField("shipping_address", address_struct, True),
+            ])
+            
+            subscriptions_schema = StructType([
+                StructField("id", StringType(), False),
+                StructField("plan_id", StringType(), True),
+                StructField("start_time", StringType(), True),
+                StructField("quantity", StringType(), True),
+                StructField("shipping_amount", amount_struct, True),
+                StructField("subscriber", subscriber_struct, True),
+                StructField("billing_info", billing_info_struct, True),
+                StructField("create_time", StringType(), True),
+                StructField("update_time", StringType(), True),
+                StructField("status", StringType(), True),
+                StructField("status_update_time", StringType(), True),
+                StructField("links", ArrayType(StructType([
+                    StructField("href", StringType(), True),
+                    StructField("rel", StringType(), True),
+                    StructField("method", StringType(), True),
+                ]), True), True),
+            ])
+            
+            return subscriptions_schema
+
+        if table_name == "orders":
+            # Orders schema based on PayPal Orders API v2
+            purchase_unit_struct = StructType([
+                StructField("reference_id", StringType(), True),
+                StructField("amount", StructType([
+                    StructField("currency_code", StringType(), True),
+                    StructField("value", StringType(), True),
+                    StructField("breakdown", StructType([
+                        StructField("item_total", amount_struct, True),
+                        StructField("shipping", amount_struct, True),
+                        StructField("handling", amount_struct, True),
+                        StructField("tax_total", amount_struct, True),
+                        StructField("insurance", amount_struct, True),
+                        StructField("shipping_discount", amount_struct, True),
+                        StructField("discount", amount_struct, True),
+                    ]), True),
+                ]), True),
+                StructField("payee", StructType([
+                    StructField("email_address", StringType(), True),
+                    StructField("merchant_id", StringType(), True),
+                ]), True),
+                StructField("description", StringType(), True),
+                StructField("custom_id", StringType(), True),
+                StructField("invoice_id", StringType(), True),
+                StructField("soft_descriptor", StringType(), True),
+                StructField("items", ArrayType(StructType([
+                    StructField("name", StringType(), True),
+                    StructField("unit_amount", amount_struct, True),
+                    StructField("tax", amount_struct, True),
+                    StructField("quantity", StringType(), True),
+                    StructField("description", StringType(), True),
+                    StructField("sku", StringType(), True),
+                    StructField("category", StringType(), True),
+                ]), True), True),
+                StructField("shipping", StructType([
+                    StructField("name", StructType([
+                        StructField("full_name", StringType(), True),
+                    ]), True),
+                    StructField("address", address_struct, True),
+                ]), True),
+                StructField("payments", StructType([
+                    StructField("captures", ArrayType(StructType([
+                        StructField("id", StringType(), True),
+                        StructField("status", StringType(), True),
+                        StructField("amount", amount_struct, True),
+                        StructField("final_capture", BooleanType(), True),
+                        StructField("seller_protection", StructType([
+                            StructField("status", StringType(), True),
+                            StructField("dispute_categories", ArrayType(StringType(), True), True),
+                        ]), True),
+                        StructField("create_time", StringType(), True),
+                        StructField("update_time", StringType(), True),
+                    ]), True), True),
+                    StructField("refunds", ArrayType(StructType([
+                        StructField("id", StringType(), True),
+                        StructField("status", StringType(), True),
+                        StructField("amount", amount_struct, True),
+                        StructField("create_time", StringType(), True),
+                        StructField("update_time", StringType(), True),
+                    ]), True), True),
+                ]), True),
+            ])
+            
+            payer_struct = StructType([
+                StructField("email_address", StringType(), True),
+                StructField("payer_id", StringType(), True),
+                StructField("name", StructType([
+                    StructField("given_name", StringType(), True),
+                    StructField("surname", StringType(), True),
+                ]), True),
+                StructField("phone", StructType([
+                    StructField("phone_number", StructType([
+                        StructField("national_number", StringType(), True),
+                    ]), True),
+                ]), True),
+                StructField("address", address_struct, True),
+            ])
+            
+            orders_schema = StructType([
+                StructField("id", StringType(), False),
+                StructField("intent", StringType(), True),
+                StructField("status", StringType(), True),
+                StructField("purchase_units", ArrayType(purchase_unit_struct, True), True),
+                StructField("payer", payer_struct, True),
+                StructField("create_time", StringType(), True),
+                StructField("update_time", StringType(), True),
+                StructField("links", ArrayType(StructType([
+                    StructField("href", StringType(), True),
+                    StructField("rel", StringType(), True),
+                    StructField("method", StringType(), True),
+                ]), True), True),
+            ])
+            
+            return orders_schema
+
         raise ValueError(f"Unsupported table: {table_name!r}")
 
     def read_table_metadata(
@@ -269,6 +500,27 @@ class LakeflowConnect:
                 "ingestion_type": "snapshot",
             }
 
+        if table_name == "invoices":
+            return {
+                "primary_keys": ["id"],
+                "cursor_field": "detail.invoice_date",
+                "ingestion_type": "snapshot",
+            }
+
+        if table_name == "subscriptions":
+            return {
+                "primary_keys": ["id"],
+                "cursor_field": "update_time",
+                "ingestion_type": "cdc",
+            }
+
+        if table_name == "orders":
+            return {
+                "primary_keys": ["id"],
+                "cursor_field": "update_time",
+                "ingestion_type": "snapshot",
+            }
+
         raise ValueError(f"Unsupported table: {table_name!r}")
 
     def read_table(
@@ -290,6 +542,15 @@ class LakeflowConnect:
 
         if table_name == "transactions":
             return self._read_transactions(start_offset, table_options)
+
+        if table_name == "invoices":
+            return self._read_invoices(start_offset, table_options)
+
+        if table_name == "subscriptions":
+            return self._read_subscriptions(start_offset, table_options)
+
+        if table_name == "orders":
+            return self._read_orders(start_offset, table_options)
 
         raise ValueError(f"Unsupported table: {table_name!r}")
 
@@ -400,4 +661,181 @@ class LakeflowConnect:
             next_offset = start_offset if start_offset else {"page": page}
         
         return iter(records), next_offset
+
+    def _read_invoices(
+        self, start_offset: dict, table_options: dict[str, str]
+    ) -> (Iterator[dict], dict):
+        """
+        Internal implementation for reading the 'invoices' table.
+        
+        Uses PayPal Invoicing API v2: GET /v2/invoicing/invoices
+        
+        Optional table_options:
+            - page: Page number (default: 1)
+            - page_size: Number of invoices per page (default: 20, max: 100)
+            - total_required: Whether to show total count (default: false)
+        """
+        # Get pagination parameters
+        try:
+            page_size = int(table_options.get("page_size", 20))
+        except (TypeError, ValueError):
+            page_size = 20
+        page_size = max(1, min(page_size, 100))
+        
+        # Get starting page from offset (default 1)
+        if start_offset and isinstance(start_offset, dict):
+            page = start_offset.get("page", 1)
+        else:
+            page = 1
+        
+        # Build query parameters
+        params = {
+            "page": page,
+            "page_size": page_size,
+            "total_required": table_options.get("total_required", "false"),
+        }
+        
+        # Make API request
+        response = self._make_request("GET", "/v2/invoicing/invoices", params)
+        
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"PayPal API error for invoices: {response.status_code} {response.text}"
+            )
+        
+        data = response.json()
+        
+        # Extract invoices array
+        invoices = data.get("items", [])
+        if not isinstance(invoices, list):
+            raise ValueError(
+                f"Unexpected response format for invoices: {type(invoices).__name__}"
+            )
+        
+        # Process records - keep nested structure
+        records: list[dict[str, Any]] = []
+        for invoice in invoices:
+            records.append(invoice)
+        
+        # Check if there are more pages using links
+        links = data.get("links", [])
+        has_next = any(link.get("rel") == "next" for link in links if isinstance(link, dict))
+        
+        # If there are more pages, increment page number
+        if has_next:
+            next_offset = {"page": page + 1}
+        else:
+            # No more pages - return same offset to indicate end of data
+            next_offset = start_offset if start_offset else {"page": page}
+        
+        return iter(records), next_offset
+
+    def _read_subscriptions(
+        self, start_offset: dict, table_options: dict[str, str]
+    ) -> (Iterator[dict], dict):
+        """
+        Internal implementation for reading the 'subscriptions' table.
+        
+        Uses PayPal Subscriptions API v1: GET /v1/billing/subscriptions
+        
+        Optional table_options:
+            - plan_id: Filter by plan ID
+            - start_time: Filter by start time (ISO 8601)
+            - end_time: Filter by end time (ISO 8601)
+        """
+        # Note: PayPal Subscriptions API has limited bulk listing capability
+        # The API primarily supports getting subscriptions by ID
+        # This implementation provides a basic framework that may need adjustment
+        
+        # Get starting page from offset (default 1)
+        if start_offset and isinstance(start_offset, dict):
+            page = start_offset.get("page", 1)
+            last_id = start_offset.get("last_id")
+        else:
+            page = 1
+            last_id = None
+        
+        # Build query parameters
+        params = {}
+        if table_options.get("plan_id"):
+            params["plan_id"] = table_options["plan_id"]
+        if table_options.get("start_time"):
+            params["start_time"] = table_options["start_time"]
+        if table_options.get("end_time"):
+            params["end_time"] = table_options["end_time"]
+        
+        # Note: This endpoint may require a plan_id or may not support bulk listing
+        # Depending on PayPal API capabilities, this may need to be adjusted
+        try:
+            response = self._make_request("GET", "/v1/billing/subscriptions", params)
+        except RuntimeError as e:
+            # If the bulk list endpoint doesn't exist, return empty with note
+            if "404" in str(e):
+                raise RuntimeError(
+                    "PayPal Subscriptions API does not support bulk listing. "
+                    "You may need to specify a 'plan_id' in table_options, or "
+                    "subscriptions may need to be accessed through other means."
+                )
+            raise
+        
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"PayPal API error for subscriptions: {response.status_code} {response.text}"
+            )
+        
+        data = response.json()
+        
+        # Extract subscriptions array (actual field name may vary)
+        subscriptions = data.get("subscriptions", data.get("items", []))
+        if not isinstance(subscriptions, list):
+            raise ValueError(
+                f"Unexpected response format for subscriptions: {type(subscriptions).__name__}"
+            )
+        
+        # Process records
+        records: list[dict[str, Any]] = []
+        for subscription in subscriptions:
+            records.append(subscription)
+        
+        # Check for pagination
+        links = data.get("links", [])
+        has_next = any(link.get("rel") == "next" for link in links if isinstance(link, dict))
+        
+        if has_next and records:
+            last_record_id = records[-1].get("id") if records else None
+            next_offset = {"page": page + 1, "last_id": last_record_id}
+        else:
+            next_offset = start_offset if start_offset else {"page": page}
+        
+        return iter(records), next_offset
+
+    def _read_orders(
+        self, start_offset: dict, table_options: dict[str, str]
+    ) -> (Iterator[dict], dict):
+        """
+        Internal implementation for reading the 'orders' table.
+        
+        Note: PayPal Orders API v2 does not provide a direct "list all orders" endpoint.
+        Orders are typically created and retrieved by ID, or accessed through 
+        Transaction Search API.
+        
+        This implementation attempts to use available endpoints, but may have limitations.
+        Consider using the 'transactions' table for order history instead.
+        """
+        # PayPal Orders API v2 is primarily for creating/managing individual orders
+        # There is no bulk "list orders" endpoint in the standard API
+        
+        # Get starting page from offset (default 1)
+        if start_offset and isinstance(start_offset, dict):
+            page = start_offset.get("page", 1)
+        else:
+            page = 1
+        
+        # Since there's no list endpoint, we return an informative error
+        raise RuntimeError(
+            "PayPal Orders API v2 does not support bulk order listing. "
+            "Orders are created and retrieved individually by ID. "
+            "To retrieve order/payment history, use the 'transactions' table instead, "
+            "which provides comprehensive transaction data including order information."
+        )
 

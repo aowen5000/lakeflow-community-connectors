@@ -8,6 +8,7 @@
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Iterator
+import json
 
 from pyspark.sql import Row
 from pyspark.sql.datasource import DataSource, DataSourceReader, SimpleDataSourceStreamReader
@@ -23,132 +24,182 @@ def register_lakeflow_source(spark):
     # libs/utils.py
     ########################################################
 
+    def _parse_struct(value: Any, field_type: StructType) -> Row:
+        """Parse a dictionary into a PySpark Row based on StructType schema."""
+        if not isinstance(value, dict):
+            raise ValueError(f"Expected a dictionary for StructType, got {type(value)}")
+        # Spark Python -> Arrow conversion require missing StructType fields to be assigned None.
+        if value == {}:
+            raise ValueError(
+                "field in StructType cannot be an empty dict. "
+                "Please assign None as the default value instead."
+            )
+        field_dict = {}
+        for field in field_type.fields:
+            if field.name in value:
+                field_dict[field.name] = parse_value(value.get(field.name), field.dataType)
+            elif field.nullable:
+                field_dict[field.name] = None
+            else:
+                raise ValueError(f"Field {field.name} is not nullable but not found in the input")
+        return Row(**field_dict)
+
+
+    def _parse_array(value: Any, field_type: ArrayType) -> list:
+        """Parse a list into a PySpark array based on ArrayType schema."""
+        if not isinstance(value, list):
+            if field_type.containsNull:
+                return [parse_value(value, field_type.elementType)]
+            raise ValueError(f"Expected a list for ArrayType, got {type(value)}")
+        return [parse_value(v, field_type.elementType) for v in value]
+
+
+    def _parse_map(value: Any, field_type: MapType) -> dict:
+        """Parse a dictionary into a PySpark map based on MapType schema."""
+        if not isinstance(value, dict):
+            raise ValueError(f"Expected a dictionary for MapType, got {type(value)}")
+        return {
+            parse_value(k, field_type.keyType): parse_value(v, field_type.valueType)
+            for k, v in value.items()
+        }
+
+
+    def _parse_string(value: Any) -> str:
+        """Convert value to string."""
+        return str(value)
+
+
+    def _parse_integer(value: Any) -> int:
+        """Convert value to integer."""
+        if isinstance(value, str) and value.strip():
+            return int(float(value)) if "." in value else int(value)
+        if isinstance(value, (int, float)):
+            return int(value)
+        raise ValueError(f"Cannot convert {value} to integer")
+
+
+    def _parse_float(value: Any) -> float:
+        """Convert value to float."""
+        return float(value)
+
+
+    def _parse_decimal(value: Any) -> Decimal:
+        """Convert value to Decimal."""
+        return Decimal(value) if isinstance(value, str) and value.strip() else Decimal(str(value))
+
+
+    def _parse_boolean(value: Any) -> bool:
+        """Convert value to boolean."""
+        if isinstance(value, str):
+            lowered = value.lower()
+            if lowered in ("true", "t", "yes", "y", "1"):
+                return True
+            if lowered in ("false", "f", "no", "n", "0"):
+                return False
+        return bool(value)
+
+
+    def _parse_date(value: Any) -> datetime.date:
+        """Convert value to date."""
+        if isinstance(value, str):
+            for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+                try:
+                    return datetime.strptime(value, fmt).date()
+                except ValueError:
+                    continue
+            return datetime.fromisoformat(value).date()
+        if isinstance(value, datetime):
+            return value.date()
+        raise ValueError(f"Cannot convert {value} to date")
+
+
+    def _parse_timestamp(value: Any) -> datetime:
+        """Convert value to timestamp."""
+        if isinstance(value, str):
+            ts_value = value.replace("Z", "+00:00") if value.endswith("Z") else value
+            try:
+                return datetime.fromisoformat(ts_value)
+            except ValueError:
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+                    try:
+                        return datetime.strptime(ts_value, fmt)
+                    except ValueError:
+                        continue
+        elif isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value)
+        elif isinstance(value, datetime):
+            return value
+        raise ValueError(f"Cannot convert {value} to timestamp")
+
+
+    def _decode_string_to_bytes(value: str) -> bytes:
+        """Try to decode a string as base64, then hex, then UTF-8."""
+        try:
+            return base64.b64decode(value)
+        except Exception:
+            pass
+        try:
+            return bytes.fromhex(value)
+        except Exception:
+            pass
+        return value.encode("utf-8")
+
+
+    def _parse_binary(value: Any) -> bytes:
+        """Convert value to bytes. Tries base64, then hex, then UTF-8 for strings."""
+        if isinstance(value, bytes):
+            return value
+        if isinstance(value, bytearray):
+            return bytes(value)
+        if isinstance(value, str):
+            return _decode_string_to_bytes(value)
+        if isinstance(value, list):
+            return bytes(value)
+        return str(value).encode("utf-8")
+
+
+    # Mapping of primitive types to their parser functions
+    _PRIMITIVE_PARSERS = {
+        StringType: _parse_string,
+        IntegerType: _parse_integer,
+        LongType: _parse_integer,
+        FloatType: _parse_float,
+        DoubleType: _parse_float,
+        DecimalType: _parse_decimal,
+        BooleanType: _parse_boolean,
+        DateType: _parse_date,
+        TimestampType: _parse_timestamp,
+        BinaryType: _parse_binary,
+    }
+
+
     def parse_value(value: Any, field_type: DataType) -> Any:
         """
         Converts a JSON value into a PySpark-compatible data type based on the provided field type.
         """
         if value is None:
             return None
+
         # Handle complex types
         if isinstance(field_type, StructType):
-            # Validate input for StructType
-            if not isinstance(value, dict):
-                raise ValueError(f"Expected a dictionary for StructType, got {type(value)}")
-            # Spark Python -> Arrow conversion require missing StructType fields to be assigned None.
-            if value == {}:
-                raise ValueError(
-                    f"field in StructType cannot be an empty dict. Please assign None as the default value instead."
-                )
-            # For StructType, recursively parse fields into a Row
-            field_dict = {}
-            for field in field_type.fields:
-                # When a field does not exist in the input:
-                # 1. set it to None when schema marks it as nullable
-                # 2. Otherwise, raise an error.
-                if field.name in value:
-                    field_dict[field.name] = parse_value(value.get(field.name), field.dataType)
-                elif field.nullable:
-                    field_dict[field.name] = None
-                else:
-                    raise ValueError(f"Field {field.name} is not nullable but not found in the input")
+            return _parse_struct(value, field_type)
+        if isinstance(field_type, ArrayType):
+            return _parse_array(value, field_type)
+        if isinstance(field_type, MapType):
+            return _parse_map(value, field_type)
 
-            return Row(**field_dict)
-        elif isinstance(field_type, ArrayType):
-            # For ArrayType, parse each element in the array
-            if not isinstance(value, list):
-                # Handle edge case: single value that should be an array
-                if field_type.containsNull:
-                    # Try to convert to a single-element array if nulls are allowed
-                    return [parse_value(value, field_type.elementType)]
-                else:
-                    raise ValueError(f"Expected a list for ArrayType, got {type(value)}")
-            return [parse_value(v, field_type.elementType) for v in value]
-        elif isinstance(field_type, MapType):
-            # Handle MapType - new support
-            if not isinstance(value, dict):
-                raise ValueError(f"Expected a dictionary for MapType, got {type(value)}")
-            return {
-                parse_value(k, field_type.keyType): parse_value(v, field_type.valueType)
-                for k, v in value.items()
-            }
-        # Handle primitive types with more robust error handling and type conversion
+        # Handle primitive types via type-based lookup
         try:
-            if isinstance(field_type, StringType):
-                # Don't convert None to "None" string
-                return str(value) if value is not None else None
-            elif isinstance(field_type, (IntegerType, LongType)):
-                # Convert numeric strings and floats to integers
-                if isinstance(value, str) and value.strip():
-                    # Handle numeric strings
-                    if "." in value:
-                        return int(float(value))
-                    return int(value)
-                elif isinstance(value, (int, float)):
-                    return int(value)
-                raise ValueError(f"Cannot convert {value} to integer")
-            elif isinstance(field_type, FloatType) or isinstance(field_type, DoubleType):
-                # New support for floating point types
-                if isinstance(value, str) and value.strip():
-                    return float(value)
-                return float(value)
-            elif isinstance(field_type, DecimalType):
-                # New support for Decimal type
+            field_type_class = type(field_type)
+            if field_type_class in _PRIMITIVE_PARSERS:
+                return _PRIMITIVE_PARSERS[field_type_class](value)
 
-                if isinstance(value, str) and value.strip():
-                    return Decimal(value)
-                return Decimal(str(value))
-            elif isinstance(field_type, BooleanType):
-                # Enhanced boolean conversion
-                if isinstance(value, str):
-                    lowered = value.lower()
-                    if lowered in ("true", "t", "yes", "y", "1"):
-                        return True
-                    elif lowered in ("false", "f", "no", "n", "0"):
-                        return False
-                return bool(value)
-            elif isinstance(field_type, DateType):
-                # New support for DateType
-                if isinstance(value, str):
-                    # Try multiple date formats
-                    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d-%m-%Y", "%Y/%m/%d"):
-                        try:
-                            return datetime.strptime(value, fmt).date()
-                        except ValueError:
-                            continue
-                    # ISO format as fallback
-                    return datetime.fromisoformat(value).date()
-                elif isinstance(value, datetime):
-                    return value.date()
-                raise ValueError(f"Cannot convert {value} to date")
-            elif isinstance(field_type, TimestampType):
-                # Enhanced timestamp handling
-                if isinstance(value, str):
-                    # Handle multiple timestamp formats including Z and timezone offsets
-                    if value.endswith("Z"):
-                        value = value.replace("Z", "+00:00")
-                    try:
-                        return datetime.fromisoformat(value)
-                    except ValueError:
-                        # Try additional formats if ISO format fails
-                        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
-                            try:
-                                return datetime.strptime(value, fmt)
-                            except ValueError:
-                                continue
-                elif isinstance(value, (int, float)):
-                    # Handle Unix timestamps
-                    return datetime.fromtimestamp(value)
-                elif isinstance(value, datetime):
-                    return value
-                raise ValueError(f"Cannot convert {value} to timestamp")
-            else:
-                # Check for custom UDT handling
-                if hasattr(field_type, "fromJson"):
-                    # Support for User Defined Types that implement fromJson
-                    return field_type.fromJson(value)
-                raise TypeError(f"Unsupported field type: {field_type}")
+            # Check for custom UDT handling
+            if hasattr(field_type, "fromJson"):
+                return field_type.fromJson(value)
+
+            raise TypeError(f"Unsupported field type: {field_type}")
         except (ValueError, TypeError) as e:
-            # Add context to the error
             raise ValueError(f"Error converting '{value}' ({type(value)}) to {field_type}: {str(e)}")
 
 
@@ -293,9 +344,9 @@ def register_lakeflow_source(spark):
             """
             List names of all tables supported by this connector.
 
-            Currently supports only the 'transactions' table.
+            Supports: transactions, invoices, subscriptions, orders
             """
-            return ["transactions"]
+            return ["transactions", "invoices", "subscriptions", "orders"]
 
         def get_table_schema(
             self, table_name: str, table_options: dict[str, str]
@@ -387,6 +438,237 @@ def register_lakeflow_source(spark):
 
                 return transactions_schema
 
+            if table_name == "invoices":
+                # Invoice schema based on PayPal Invoicing API v2
+                invoice_detail_struct = StructType([
+                    StructField("invoice_number", StringType(), True),
+                    StructField("reference", StringType(), True),
+                    StructField("invoice_date", StringType(), True),
+                    StructField("currency_code", StringType(), True),
+                    StructField("note", StringType(), True),
+                    StructField("term", StringType(), True),
+                    StructField("memo", StringType(), True),
+                ])
+
+                invoicer_struct = StructType([
+                    StructField("name", StringType(), True),
+                    StructField("email_address", StringType(), True),
+                    StructField("phones", ArrayType(StructType([
+                        StructField("country_code", StringType(), True),
+                        StructField("national_number", StringType(), True),
+                        StructField("phone_type", StringType(), True),
+                    ]), True), True),
+                    StructField("website", StringType(), True),
+                    StructField("tax_id", StringType(), True),
+                    StructField("logo_url", StringType(), True),
+                ])
+
+                primary_recipient_struct = StructType([
+                    StructField("billing_info", StructType([
+                        StructField("email_address", StringType(), True),
+                        StructField("language", StringType(), True),
+                    ]), True),
+                    StructField("shipping_info", StructType([
+                        StructField("name", StringType(), True),
+                        StructField("address", address_struct, True),
+                    ]), True),
+                ])
+
+                item_struct = StructType([
+                    StructField("name", StringType(), True),
+                    StructField("description", StringType(), True),
+                    StructField("quantity", StringType(), True),
+                    StructField("unit_amount", amount_struct, True),
+                    StructField("tax", StructType([
+                        StructField("name", StringType(), True),
+                        StructField("percent", StringType(), True),
+                        StructField("amount", amount_struct, True),
+                    ]), True),
+                    StructField("item_date", StringType(), True),
+                    StructField("discount", StructType([
+                        StructField("percent", StringType(), True),
+                        StructField("amount", amount_struct, True),
+                    ]), True),
+                ])
+
+                amount_summary_struct = StructType([
+                    StructField("currency_code", StringType(), True),
+                    StructField("value", StringType(), True),
+                ])
+
+                invoices_schema = StructType([
+                    StructField("id", StringType(), False),
+                    StructField("parent_id", StringType(), True),
+                    StructField("status", StringType(), True),
+                    StructField("detail", invoice_detail_struct, True),
+                    StructField("invoicer", invoicer_struct, True),
+                    StructField("primary_recipients", ArrayType(primary_recipient_struct, True), True),
+                    StructField("items", ArrayType(item_struct, True), True),
+                    StructField("amount", StructType([
+                        StructField("breakdown", StructType([
+                            StructField("item_total", amount_summary_struct, True),
+                            StructField("discount", amount_summary_struct, True),
+                            StructField("tax_total", amount_summary_struct, True),
+                            StructField("shipping", amount_summary_struct, True),
+                        ]), True),
+                    ]), True),
+                    StructField("due_amount", amount_summary_struct, True),
+                    StructField("gratuity", amount_summary_struct, True),
+                    StructField("links", ArrayType(StructType([
+                        StructField("href", StringType(), True),
+                        StructField("rel", StringType(), True),
+                        StructField("method", StringType(), True),
+                    ]), True), True),
+                ])
+
+                return invoices_schema
+
+            if table_name == "subscriptions":
+                # Subscription schema based on PayPal Subscriptions API v1
+                billing_info_struct = StructType([
+                    StructField("outstanding_balance", amount_struct, True),
+                    StructField("cycle_executions", ArrayType(StructType([
+                        StructField("tenure_type", StringType(), True),
+                        StructField("sequence", LongType(), True),
+                        StructField("cycles_completed", LongType(), True),
+                        StructField("cycles_remaining", LongType(), True),
+                        StructField("total_cycles", LongType(), True),
+                    ]), True), True),
+                    StructField("last_payment", StructType([
+                        StructField("amount", amount_struct, True),
+                        StructField("time", StringType(), True),
+                    ]), True),
+                    StructField("next_billing_time", StringType(), True),
+                    StructField("final_payment_time", StringType(), True),
+                    StructField("failed_payments_count", LongType(), True),
+                ])
+
+                subscriber_struct = StructType([
+                    StructField("email_address", StringType(), True),
+                    StructField("payer_id", StringType(), True),
+                    StructField("name", StructType([
+                        StructField("given_name", StringType(), True),
+                        StructField("surname", StringType(), True),
+                    ]), True),
+                    StructField("shipping_address", address_struct, True),
+                ])
+
+                subscriptions_schema = StructType([
+                    StructField("id", StringType(), False),
+                    StructField("plan_id", StringType(), True),
+                    StructField("start_time", StringType(), True),
+                    StructField("quantity", StringType(), True),
+                    StructField("shipping_amount", amount_struct, True),
+                    StructField("subscriber", subscriber_struct, True),
+                    StructField("billing_info", billing_info_struct, True),
+                    StructField("create_time", StringType(), True),
+                    StructField("update_time", StringType(), True),
+                    StructField("status", StringType(), True),
+                    StructField("status_update_time", StringType(), True),
+                    StructField("links", ArrayType(StructType([
+                        StructField("href", StringType(), True),
+                        StructField("rel", StringType(), True),
+                        StructField("method", StringType(), True),
+                    ]), True), True),
+                ])
+
+                return subscriptions_schema
+
+            if table_name == "orders":
+                # Orders schema based on PayPal Orders API v2
+                purchase_unit_struct = StructType([
+                    StructField("reference_id", StringType(), True),
+                    StructField("amount", StructType([
+                        StructField("currency_code", StringType(), True),
+                        StructField("value", StringType(), True),
+                        StructField("breakdown", StructType([
+                            StructField("item_total", amount_struct, True),
+                            StructField("shipping", amount_struct, True),
+                            StructField("handling", amount_struct, True),
+                            StructField("tax_total", amount_struct, True),
+                            StructField("insurance", amount_struct, True),
+                            StructField("shipping_discount", amount_struct, True),
+                            StructField("discount", amount_struct, True),
+                        ]), True),
+                    ]), True),
+                    StructField("payee", StructType([
+                        StructField("email_address", StringType(), True),
+                        StructField("merchant_id", StringType(), True),
+                    ]), True),
+                    StructField("description", StringType(), True),
+                    StructField("custom_id", StringType(), True),
+                    StructField("invoice_id", StringType(), True),
+                    StructField("soft_descriptor", StringType(), True),
+                    StructField("items", ArrayType(StructType([
+                        StructField("name", StringType(), True),
+                        StructField("unit_amount", amount_struct, True),
+                        StructField("tax", amount_struct, True),
+                        StructField("quantity", StringType(), True),
+                        StructField("description", StringType(), True),
+                        StructField("sku", StringType(), True),
+                        StructField("category", StringType(), True),
+                    ]), True), True),
+                    StructField("shipping", StructType([
+                        StructField("name", StructType([
+                            StructField("full_name", StringType(), True),
+                        ]), True),
+                        StructField("address", address_struct, True),
+                    ]), True),
+                    StructField("payments", StructType([
+                        StructField("captures", ArrayType(StructType([
+                            StructField("id", StringType(), True),
+                            StructField("status", StringType(), True),
+                            StructField("amount", amount_struct, True),
+                            StructField("final_capture", BooleanType(), True),
+                            StructField("seller_protection", StructType([
+                                StructField("status", StringType(), True),
+                                StructField("dispute_categories", ArrayType(StringType(), True), True),
+                            ]), True),
+                            StructField("create_time", StringType(), True),
+                            StructField("update_time", StringType(), True),
+                        ]), True), True),
+                        StructField("refunds", ArrayType(StructType([
+                            StructField("id", StringType(), True),
+                            StructField("status", StringType(), True),
+                            StructField("amount", amount_struct, True),
+                            StructField("create_time", StringType(), True),
+                            StructField("update_time", StringType(), True),
+                        ]), True), True),
+                    ]), True),
+                ])
+
+                payer_struct = StructType([
+                    StructField("email_address", StringType(), True),
+                    StructField("payer_id", StringType(), True),
+                    StructField("name", StructType([
+                        StructField("given_name", StringType(), True),
+                        StructField("surname", StringType(), True),
+                    ]), True),
+                    StructField("phone", StructType([
+                        StructField("phone_number", StructType([
+                            StructField("national_number", StringType(), True),
+                        ]), True),
+                    ]), True),
+                    StructField("address", address_struct, True),
+                ])
+
+                orders_schema = StructType([
+                    StructField("id", StringType(), False),
+                    StructField("intent", StringType(), True),
+                    StructField("status", StringType(), True),
+                    StructField("purchase_units", ArrayType(purchase_unit_struct, True), True),
+                    StructField("payer", payer_struct, True),
+                    StructField("create_time", StringType(), True),
+                    StructField("update_time", StringType(), True),
+                    StructField("links", ArrayType(StructType([
+                        StructField("href", StringType(), True),
+                        StructField("rel", StringType(), True),
+                        StructField("method", StringType(), True),
+                    ]), True), True),
+                ])
+
+                return orders_schema
+
             raise ValueError(f"Unsupported table: {table_name!r}")
 
         def read_table_metadata(
@@ -412,6 +694,27 @@ def register_lakeflow_source(spark):
                     "ingestion_type": "snapshot",
                 }
 
+            if table_name == "invoices":
+                return {
+                    "primary_keys": ["id"],
+                    "cursor_field": "detail.invoice_date",
+                    "ingestion_type": "snapshot",
+                }
+
+            if table_name == "subscriptions":
+                return {
+                    "primary_keys": ["id"],
+                    "cursor_field": "update_time",
+                    "ingestion_type": "cdc",
+                }
+
+            if table_name == "orders":
+                return {
+                    "primary_keys": ["id"],
+                    "cursor_field": "update_time",
+                    "ingestion_type": "snapshot",
+                }
+
             raise ValueError(f"Unsupported table: {table_name!r}")
 
         def read_table(
@@ -433,6 +736,15 @@ def register_lakeflow_source(spark):
 
             if table_name == "transactions":
                 return self._read_transactions(start_offset, table_options)
+
+            if table_name == "invoices":
+                return self._read_invoices(start_offset, table_options)
+
+            if table_name == "subscriptions":
+                return self._read_subscriptions(start_offset, table_options)
+
+            if table_name == "orders":
+                return self._read_orders(start_offset, table_options)
 
             raise ValueError(f"Unsupported table: {table_name!r}")
 
@@ -544,6 +856,183 @@ def register_lakeflow_source(spark):
 
             return iter(records), next_offset
 
+        def _read_invoices(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Internal implementation for reading the 'invoices' table.
+
+            Uses PayPal Invoicing API v2: GET /v2/invoicing/invoices
+
+            Optional table_options:
+                - page: Page number (default: 1)
+                - page_size: Number of invoices per page (default: 20, max: 100)
+                - total_required: Whether to show total count (default: false)
+            """
+            # Get pagination parameters
+            try:
+                page_size = int(table_options.get("page_size", 20))
+            except (TypeError, ValueError):
+                page_size = 20
+            page_size = max(1, min(page_size, 100))
+
+            # Get starting page from offset (default 1)
+            if start_offset and isinstance(start_offset, dict):
+                page = start_offset.get("page", 1)
+            else:
+                page = 1
+
+            # Build query parameters
+            params = {
+                "page": page,
+                "page_size": page_size,
+                "total_required": table_options.get("total_required", "false"),
+            }
+
+            # Make API request
+            response = self._make_request("GET", "/v2/invoicing/invoices", params)
+
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"PayPal API error for invoices: {response.status_code} {response.text}"
+                )
+
+            data = response.json()
+
+            # Extract invoices array
+            invoices = data.get("items", [])
+            if not isinstance(invoices, list):
+                raise ValueError(
+                    f"Unexpected response format for invoices: {type(invoices).__name__}"
+                )
+
+            # Process records - keep nested structure
+            records: list[dict[str, Any]] = []
+            for invoice in invoices:
+                records.append(invoice)
+
+            # Check if there are more pages using links
+            links = data.get("links", [])
+            has_next = any(link.get("rel") == "next" for link in links if isinstance(link, dict))
+
+            # If there are more pages, increment page number
+            if has_next:
+                next_offset = {"page": page + 1}
+            else:
+                # No more pages - return same offset to indicate end of data
+                next_offset = start_offset if start_offset else {"page": page}
+
+            return iter(records), next_offset
+
+        def _read_subscriptions(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Internal implementation for reading the 'subscriptions' table.
+
+            Uses PayPal Subscriptions API v1: GET /v1/billing/subscriptions
+
+            Optional table_options:
+                - plan_id: Filter by plan ID
+                - start_time: Filter by start time (ISO 8601)
+                - end_time: Filter by end time (ISO 8601)
+            """
+            # Note: PayPal Subscriptions API has limited bulk listing capability
+            # The API primarily supports getting subscriptions by ID
+            # This implementation provides a basic framework that may need adjustment
+
+            # Get starting page from offset (default 1)
+            if start_offset and isinstance(start_offset, dict):
+                page = start_offset.get("page", 1)
+                last_id = start_offset.get("last_id")
+            else:
+                page = 1
+                last_id = None
+
+            # Build query parameters
+            params = {}
+            if table_options.get("plan_id"):
+                params["plan_id"] = table_options["plan_id"]
+            if table_options.get("start_time"):
+                params["start_time"] = table_options["start_time"]
+            if table_options.get("end_time"):
+                params["end_time"] = table_options["end_time"]
+
+            # Note: This endpoint may require a plan_id or may not support bulk listing
+            # Depending on PayPal API capabilities, this may need to be adjusted
+            try:
+                response = self._make_request("GET", "/v1/billing/subscriptions", params)
+            except RuntimeError as e:
+                # If the bulk list endpoint doesn't exist, return empty with note
+                if "404" in str(e):
+                    raise RuntimeError(
+                        "PayPal Subscriptions API does not support bulk listing. "
+                        "You may need to specify a 'plan_id' in table_options, or "
+                        "subscriptions may need to be accessed through other means."
+                    )
+                raise
+
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"PayPal API error for subscriptions: {response.status_code} {response.text}"
+                )
+
+            data = response.json()
+
+            # Extract subscriptions array (actual field name may vary)
+            subscriptions = data.get("subscriptions", data.get("items", []))
+            if not isinstance(subscriptions, list):
+                raise ValueError(
+                    f"Unexpected response format for subscriptions: {type(subscriptions).__name__}"
+                )
+
+            # Process records
+            records: list[dict[str, Any]] = []
+            for subscription in subscriptions:
+                records.append(subscription)
+
+            # Check for pagination
+            links = data.get("links", [])
+            has_next = any(link.get("rel") == "next" for link in links if isinstance(link, dict))
+
+            if has_next and records:
+                last_record_id = records[-1].get("id") if records else None
+                next_offset = {"page": page + 1, "last_id": last_record_id}
+            else:
+                next_offset = start_offset if start_offset else {"page": page}
+
+            return iter(records), next_offset
+
+        def _read_orders(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Internal implementation for reading the 'orders' table.
+
+            Note: PayPal Orders API v2 does not provide a direct "list all orders" endpoint.
+            Orders are typically created and retrieved by ID, or accessed through 
+            Transaction Search API.
+
+            This implementation attempts to use available endpoints, but may have limitations.
+            Consider using the 'transactions' table for order history instead.
+            """
+            # PayPal Orders API v2 is primarily for creating/managing individual orders
+            # There is no bulk "list orders" endpoint in the standard API
+
+            # Get starting page from offset (default 1)
+            if start_offset and isinstance(start_offset, dict):
+                page = start_offset.get("page", 1)
+            else:
+                page = 1
+
+            # Since there's no list endpoint, we return an informative error
+            raise RuntimeError(
+                "PayPal Orders API v2 does not support bulk order listing. "
+                "Orders are created and retrieved individually by ID. "
+                "To retrieve order/payment history, use the 'transactions' table instead, "
+                "which provides comprehensive transaction data including order information."
+            )
+
 
     ########################################################
     # pipeline/lakeflow_python_source.py
@@ -552,6 +1041,8 @@ def register_lakeflow_source(spark):
     METADATA_TABLE = "_lakeflow_metadata"
     TABLE_NAME = "tableName"
     TABLE_NAME_LIST = "tableNameList"
+    TABLE_CONFIGS = "tableConfigs"
+    IS_DELETE_FLOW = "isDeleteFlow"
 
 
     class LakeflowStreamReader(SimpleDataSourceStreamReader):
@@ -576,9 +1067,20 @@ def register_lakeflow_source(spark):
             return {}
 
         def read(self, start: dict) -> (Iterator[tuple], dict):
-            records, offset = self.lakeflow_connect.read_table(
-                self.options["tableName"], start, self.options
-            )
+            is_delete_flow = self.options.get(IS_DELETE_FLOW) == "true"
+            # Strip delete flow options before passing to connector
+            table_options = {
+                k: v for k, v in self.options.items() if k != IS_DELETE_FLOW
+            }
+
+            if is_delete_flow:
+                records, offset = self.lakeflow_connect.read_table_deletes(
+                    self.options[TABLE_NAME], start, table_options
+                )
+            else:
+                records, offset = self.lakeflow_connect.read_table(
+                    self.options[TABLE_NAME], start, table_options
+                )
             rows = map(lambda x: parse_value(x, self.schema), records)
             return rows, offset
 
@@ -619,9 +1121,12 @@ def register_lakeflow_source(spark):
             table_name_list = self.options.get(TABLE_NAME_LIST, "")
             table_names = [o.strip() for o in table_name_list.split(",") if o.strip()]
             all_records = []
+            table_configs = json.loads(self.options.get(TABLE_CONFIGS, "{}"))
             for table in table_names:
-                metadata = self.lakeflow_connect.read_table_metadata(table, self.options)
-                all_records.append({"tableName": table, **metadata})
+                metadata = self.lakeflow_connect.read_table_metadata(
+                    table, table_configs.get(table, {})
+                )
+                all_records.append({TABLE_NAME: table, **metadata})
             return all_records
 
 
@@ -635,11 +1140,11 @@ def register_lakeflow_source(spark):
             return "lakeflow_connect"
 
         def schema(self):
-            table = self.options["tableName"]
+            table = self.options[TABLE_NAME]
             if table == METADATA_TABLE:
                 return StructType(
                     [
-                        StructField("tableName", StringType(), False),
+                        StructField(TABLE_NAME, StringType(), False),
                         StructField("primary_keys", ArrayType(StringType()), True),
                         StructField("cursor_field", StringType(), True),
                         StructField("ingestion_type", StringType(), True),

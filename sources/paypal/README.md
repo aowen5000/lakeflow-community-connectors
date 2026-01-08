@@ -23,9 +23,9 @@ To configure the connector, provide the following parameters in your connection 
 | `client_id` | string | Yes | OAuth 2.0 Client ID from PayPal Developer Dashboard | `"AYourClientIdHere..."` |
 | `client_secret` | string | Yes | OAuth 2.0 Client Secret from PayPal Developer Dashboard | `"EYourClientSecretHere..."` |
 | `environment` | string | No | API environment: `"sandbox"` or `"production"`. Defaults to `"sandbox"` | `"sandbox"` |
-| `externalOptionsAllowList` | string | Yes | Comma-separated list of table-specific options that can be configured per table: `"start_date,end_date,page_size"` | `"start_date,end_date,page_size"` |
+| `externalOptionsAllowList` | string | Yes | Comma-separated list of table-specific options that can be configured per table: `"start_date,end_date,page_size,page,total_required,plan_id,start_time,end_time"` | `"start_date,end_date,page_size,page,total_required,plan_id,start_time,end_time"` |
 
-**Note**: The `externalOptionsAllowList` parameter is **required** and must include: `"start_date,end_date,page_size"`. These options allow you to configure date ranges and pagination for each table.
+**Note**: The `externalOptionsAllowList` parameter is **required** and must include: `"start_date,end_date,page_size,page,total_required,plan_id,start_time,end_time"`. These options allow you to configure date ranges, pagination, and filtering for each table.
 
 ### Obtaining PayPal API Credentials
 
@@ -61,7 +61,7 @@ A Unity Catalog connection for this connector can be created in two ways:
    - Follow the Lakeflow Community Connector UI flow
    - Select PayPal as your source connector
    - Provide your `client_id`, `client_secret`, and `environment`
-   - Set `externalOptionsAllowList` to: `"start_date,end_date,page_size"`
+   - Set `externalOptionsAllowList` to: `"start_date,end_date,page_size,page,total_required,plan_id,start_time,end_time"`
 
 2. **Via Unity Catalog API**:
    ```python
@@ -77,16 +77,23 @@ A Unity Catalog connection for this connector can be created in two ways:
            "client_id": "YOUR_CLIENT_ID",
            "client_secret": "YOUR_CLIENT_SECRET",
            "environment": "sandbox",
-           "externalOptionsAllowList": "start_date,end_date,page_size"
+           "externalOptionsAllowList": "start_date,end_date,page_size,page,total_required,plan_id,start_time,end_time"
        }
    )
    ```
 
 ## Supported Objects
 
+The PayPal connector supports the following tables:
+
+1. **`transactions`** - Transaction history (fully functional)
+2. **`invoices`** - Invoice data (functional)
+3. **`subscriptions`** - Subscription data (limited - may require plan_id)
+4. **`orders`** - Order data (not available - use transactions instead)
+
 ### `transactions` Table
 
-The PayPal connector currently supports the **`transactions`** table, which provides transaction history data from your PayPal account.
+The **`transactions`** table provides transaction history data from your PayPal account.
 
 **Primary Key**: `transaction_info.transaction_id`
 
@@ -126,6 +133,98 @@ The `transactions` table includes nested structures for comprehensive transactio
 - **3-Year Historical Limit**: Transaction data is only available for the last 3 years from the current date.
 - **Immutable Transactions**: Transactions don't change after creation. Refunds and reversals appear as new transactions.
 
+### `invoices` Table
+
+The **`invoices`** table provides invoice data from your PayPal account using the Invoicing API v2.
+
+**Primary Key**: `id`
+
+**Incremental Ingestion**:
+- **Strategy**: Snapshot-based ingestion with pagination
+- **Cursor Field**: `detail.invoice_date`
+- **Ingestion Type**: `snapshot`
+
+**Optional Table Options**:
+
+| Option | Type | Required | Description | Example |
+|--------|------|----------|-------------|---------|
+| `page` | integer | No | Page number (default: 1) | `1` |
+| `page_size` | integer | No | Number of invoices per page (default: 20, max: 100) | `20` |
+| `total_required` | string | No | Whether to show total count (default: "false") | `"false"` |
+
+**Schema Highlights**:
+
+- **`id`**: Unique invoice identifier
+- **`status`**: Invoice status (DRAFT, SENT, PAID, CANCELLED, etc.)
+- **`detail`**: Invoice details including invoice_number, dates, currency, notes
+- **`invoicer`**: Invoicer information (name, email, tax ID, logo)
+- **`primary_recipients`**: Array of recipients with billing and shipping info
+- **`items`**: Array of line items with quantities, amounts, taxes, discounts
+- **`amount`**: Total amount breakdown (item_total, tax_total, shipping, discount)
+- **`due_amount`**: Amount due
+- **`links`**: HATEOAS links for invoice actions
+
+**Key Fields**:
+- `id` (string, not null): Unique invoice identifier
+- `status` (string): Current invoice status
+- `detail.invoice_date` (string): Invoice creation date (ISO 8601)
+- `detail.invoice_number` (string): Human-readable invoice number
+- `due_amount` (struct): Outstanding amount with currency_code and value
+
+### `subscriptions` Table
+
+The **`subscriptions`** table provides subscription data from your PayPal account using the Subscriptions API v1.
+
+**Primary Key**: `id`
+
+**Incremental Ingestion**:
+- **Strategy**: Change Data Capture (CDC) with update tracking
+- **Cursor Field**: `update_time`
+- **Ingestion Type**: `cdc`
+
+**Optional Table Options**:
+
+| Option | Type | Required | Description | Example |
+|--------|------|----------|-------------|---------|
+| `plan_id` | string | Recommended | Filter by subscription plan ID | `"P-12345..."` |
+| `start_time` | string | No | Filter by start time (ISO 8601) | `"2024-01-01T00:00:00Z"` |
+| `end_time` | string | No | Filter by end time (ISO 8601) | `"2024-12-31T23:59:59Z"` |
+
+**Schema Highlights**:
+
+- **`id`**: Unique subscription identifier
+- **`plan_id`**: Associated subscription plan ID
+- **`status`**: Subscription status (ACTIVE, SUSPENDED, CANCELLED, EXPIRED)
+- **`subscriber`**: Subscriber information (email, payer_id, name, shipping address)
+- **`billing_info`**: Billing details including cycle executions, last/next payment times, failed payment count
+- **`start_time`**: Subscription start timestamp
+- **`create_time`**: Subscription creation timestamp
+- **`update_time`**: Last update timestamp
+- **`status_update_time`**: Status change timestamp
+
+**Key Fields**:
+- `id` (string, not null): Unique subscription identifier
+- `plan_id` (string): Plan this subscription is based on
+- `status` (string): Current subscription status
+- `update_time` (string): Last modification time (ISO 8601)
+- `billing_info.next_billing_time` (string): Next scheduled billing date
+
+**Important Notes**:
+- **Limited Bulk Listing**: The PayPal Subscriptions API has limited bulk listing capability. You may need to provide a `plan_id` to filter results.
+- **Plan-Based Access**: If you encounter errors, ensure you're filtering by a valid `plan_id`.
+
+### `orders` Table
+
+The **`orders`** table is **not functional** due to PayPal API limitations.
+
+**Status**: ❌ Not Available
+
+**Reason**: PayPal Orders API v2 does not provide a bulk "list orders" endpoint. Orders are created and retrieved individually by ID only.
+
+**Alternative**: Use the **`transactions`** table instead, which provides comprehensive transaction data including order information, payments, captures, and refunds.
+
+**Schema Defined**: While the schema is defined in the connector for potential future use, attempting to read from this table will return an informative error directing you to use the `transactions` table.
+
 ## Data Type Mapping
 
 | PayPal API Type | Example Fields | Databricks Type | Notes |
@@ -161,6 +260,18 @@ pipeline_spec = {
                 "start_date": "2024-01-01T00:00:00Z",
                 "end_date": "2024-01-31T23:59:59Z",
                 "page_size": 100
+            }
+        },
+        {
+            "table": {
+                "source_table": "invoices",
+                "page_size": 50
+            }
+        },
+        {
+            "table": {
+                "source_table": "subscriptions",
+                "plan_id": "P-12345ABCDE"  # Optional but recommended
             }
         }
     ]
@@ -241,10 +352,25 @@ pipeline_spec = {
    - **Cause**: Some transactions may not have all nested objects (e.g., no shipping info for certain transaction types)
    - **Solution**: This is expected behavior. The connector sets missing nested objects to `null`. Handle nulls in your downstream queries.
 
+7. **Subscriptions API Error (404 or requires plan_id)**
+   - **Cause**: PayPal Subscriptions API has limited bulk listing capability
+   - **Solution**: Provide a `plan_id` in table_options to filter subscriptions by plan. Example: `"plan_id": "P-12345ABCDE"`
+
+8. **Orders Table Not Available**
+   - **Cause**: PayPal Orders API v2 doesn't support bulk order listing
+   - **Solution**: Use the `transactions` table instead, which includes order and payment information
+
+9. **Invoices Pagination Issues**
+   - **Cause**: Large number of invoices may require multiple page requests
+   - **Solution**: The connector handles pagination automatically. Adjust `page_size` (max 100) for better performance.
+
 ## References
 
 - [PayPal REST API Documentation](https://developer.paypal.com/api/rest/)
 - [PayPal Transaction Search API v1](https://developer.paypal.com/docs/api/transaction-search/v1/)
+- [PayPal Invoicing API v2](https://developer.paypal.com/docs/api/invoicing/v2/)
+- [PayPal Subscriptions API v1](https://developer.paypal.com/docs/api/subscriptions/v1/)
+- [PayPal Orders API v2](https://developer.paypal.com/docs/api/orders/v2/)
 - [PayPal Developer Dashboard](https://developer.paypal.com/dashboard/)
 - [PayPal REST API Current Resources](https://developer.paypal.com/api/rest/current-resources/)
 - [OAuth 2.0 Client Credentials Flow](https://developer.paypal.com/api/rest/authentication/)
