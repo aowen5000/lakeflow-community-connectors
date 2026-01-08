@@ -112,7 +112,7 @@ def _create_append_table(spark, connection_name: str, config: SdpTableConfig) ->
 
 
 def _get_table_metadata(
-    spark, connection_name: str, table_list: list[str], table_configs: dict[str, str]
+    spark, connection_name: str, table_list: list[str]
 ) -> dict:
     """Get table metadata (primary_keys, cursor_field, ingestion_type etc.)"""
     df = (
@@ -120,9 +120,9 @@ def _get_table_metadata(
         .option("databricks.connection", connection_name)
         .option("tableName", "_lakeflow_metadata")
         .option("tableNameList", ",".join(table_list))
-        .option("tableConfigs", json.dumps(table_configs))
         .load()
     )
+    
     metadata = {}
     for row in df.collect():
         table_metadata = {}
@@ -144,10 +144,8 @@ def ingest(spark, pipeline_spec: dict) -> None:
     connection_name = spec.connection_name()
     table_list = spec.get_table_list()
 
-    # Get table_configurations for all tables. These are merged into one dict
-    # keyed by table name.
-    table_configs = spec.get_table_configurations()
-    metadata = _get_table_metadata(spark, connection_name, table_list, table_configs)
+    # Get metadata without table configurations (metadata query doesn't need them)
+    metadata = _get_table_metadata(spark, connection_name, table_list)
 
     def _ingest_table(table: str) -> None:
         """Helper function to ingest a single table"""
