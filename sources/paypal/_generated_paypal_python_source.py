@@ -21,7 +21,7 @@ def register_lakeflow_source(spark):
     from pyspark.sql.types import (
         StructType, StructField, StringType, LongType, DoubleType, 
         BooleanType, TimestampType, ArrayType, MapType, DecimalType, 
-        DateType, BinaryType, IntegerType, DataType
+        DateType, BinaryType, IntegerType, FloatType, DataType
     )
 
     ########################################################
