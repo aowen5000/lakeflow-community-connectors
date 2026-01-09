@@ -27,7 +27,7 @@ source_name = "paypal"
 pipeline_spec = {
     "connection_name": "paypal_v2",
     "objects": [
-        # Full config: customize destination and behavior
+        # Table 1: Transactions - Payment transaction history
         {
             "table": {
                 "source_table": "transactions",
@@ -36,11 +36,13 @@ pipeline_spec = {
                 "destination_table": "transactions",
                 "table_configuration": {
                     "scd_type": "APPEND_ONLY",
-                    "start_date": "2025-12-15T00:00:00Z",
-                    "end_date": "2026-01-07T23:59:59Z"
+                    "start_date": "2026-01-09T00:00:00Z",
+                    "end_date": "2026-01-09T23:59:59Z",
+                    "page_size": 100
                 },
             }
         },
+        # Table 2: Subscriptions - Subscription data (requires subscription IDs)
         {
             "table": {
                 "source_table": "subscriptions",
@@ -48,11 +50,52 @@ pipeline_spec = {
                 "destination_schema": "paypal_comunity_connector_a0",
                 "destination_table": "subscriptions",
                 "table_configuration": {
-                    "scd_type": "APPEND_ONLY"
+                    "scd_type": "SCD_TYPE_1",
+                    "subscription_ids": ["I-S45EDF98N3AV", "I-FWEC6DA9AKVJ", "I-D6JVS5Y2V12P", "I-GN66ML8DL6NC", "I-BJK104AU5722"]
                 },
             }
         },
-        # ... more tables to ingest...
+        # Table 3: Products - Catalog products
+        {
+            "table": {
+                "source_table": "products",
+                "destination_catalog": "alex_owen_the_unity_catalog",
+                "destination_schema": "paypal_comunity_connector_a0",
+                "destination_table": "products",
+                "table_configuration": {
+                    "scd_type": "SCD_TYPE_1",
+                    "page_size": 20
+                },
+            }
+        },
+        # Table 4: Plans - Billing plans for subscriptions
+        {
+            "table": {
+                "source_table": "plans",
+                "destination_catalog": "alex_owen_the_unity_catalog",
+                "destination_schema": "paypal_comunity_connector_a0",
+                "destination_table": "plans",
+                "table_configuration": {
+                    "scd_type": "SCD_TYPE_1",
+                    "page_size": 20
+                },
+            }
+        },
+        # Table 5: Payment Captures - Payment capture transaction details
+        {
+            "table": {
+                "source_table": "payment_captures",
+                "destination_catalog": "alex_owen_the_unity_catalog",
+                "destination_schema": "paypal_comunity_connector_a0",
+                "destination_table": "payment_captures",
+                "table_configuration": {
+                    "scd_type": "APPEND_ONLY",
+                    "start_date": "2026-01-09T00:00:00Z",
+                    "end_date": "2026-01-09T23:59:59Z",
+                    "page_size": 100
+                },
+            }
+        },
     ],
 }
 
