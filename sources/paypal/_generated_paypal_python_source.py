@@ -206,6 +206,7 @@ def register_lakeflow_source(spark):
     # sources/paypal/paypal.py
     ########################################################
 
+    """
     PayPal Community Connector for Databricks Lakeflow
 
     METHODOLOGY & ARCHITECTURE:
