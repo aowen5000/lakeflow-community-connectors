@@ -214,8 +214,9 @@ pipeline_spec = {
                 "destination_table": "tracking",
                 "table_configuration": {
                     "scd_type": "SCD_TYPE_1",
-                    "page_size": 10
-                    # Add transaction_id, tracking_number, or date range as needed
+                    "page_size": 10,
+                    "start_date": "2026-01-01",
+                    "end_date": "2026-01-09"
                 },
             }
         },
