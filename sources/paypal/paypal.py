@@ -954,12 +954,12 @@ class LakeflowConnect:
             )
         
         # Check if we've already processed all subscriptions
-        # Use a simple "done" flag instead of index-based pagination
-        if start_offset and start_offset.get("done"):
-            # Already processed all - return empty with same offset
+        # If called again after first fetch, return empty
+        if start_offset is not None:
+            # Already processed - return empty with SAME offset to signal completion
             return iter([]), start_offset
         
-        # Fetch ALL subscription details in one call
+        # First call: Fetch ALL subscription details in one batch
         records: list[dict[str, Any]] = []
         include_transactions = table_options.get("include_transactions", "false").lower() == "true"
         
@@ -995,9 +995,10 @@ class LakeflowConnect:
                 # Log error but continue processing other subscriptions
                 print(f"Warning: Error fetching subscription {subscription_id}: {e}")
         
-        # All subscriptions processed - signal completion with done flag
-        # For next call, return same offset ({"done": True}) to indicate no more data
-        next_offset = {"done": True}
+        # CRITICAL: Return empty dict {} as next_offset to signal completion
+        # Databricks rule: returning a different offset signals "done"
+        # First call gets None, returns {}, next call gets {}, returns {} (same = done)
+        next_offset = {}
         
         return iter(records), next_offset
 
