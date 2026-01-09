@@ -370,6 +370,13 @@ class LakeflowConnect:
                 StructField("update_time", StringType(), True),
                 StructField("status", StringType(), True),
                 StructField("status_update_time", StringType(), True),
+                StructField("custom_id", StringType(), True),  # Missing field!
+                StructField("plan_overridden", StringType(), True),  # Missing field!
+                StructField("plan", StructType([  # Missing field!
+                    StructField("product_id", StringType(), True),
+                    StructField("name", StringType(), True),
+                    StructField("description", StringType(), True),
+                ]), True),
                 StructField("links", ArrayType(StructType([
                     StructField("href", StringType(), True),
                     StructField("rel", StringType(), True),
@@ -930,11 +937,10 @@ class LakeflowConnect:
             - subscription_ids: List or comma-separated string of subscription IDs
                                 Example: ["I-ABC123", "I-DEF456"] or "I-ABC123,I-DEF456"
         
-        Optional table_options:
-            - include_transactions: If true, fetch transaction details for each subscription
-        
         Note: PayPal's List Subscriptions API may not return results in Sandbox environment.
         Using explicit IDs ensures reliable data retrieval for testing.
+        
+        Subscription transactions are available via the main 'transactions' table.
         """
         # Get subscription IDs from table_options
         subscription_ids = table_options.get("subscription_ids", [])
@@ -964,7 +970,6 @@ class LakeflowConnect:
         
         # First call: Fetch ALL subscription details in one batch
         records: list[dict[str, Any]] = []
-        include_transactions = table_options.get("include_transactions", "false").lower() == "true"
         
         # Process ALL subscriptions
         for subscription_id in subscription_ids:
@@ -975,19 +980,8 @@ class LakeflowConnect:
                 if response.status_code == 200:
                     subscription_data = response.json()
                     
-                    # Optionally fetch transactions for this subscription
-                    if include_transactions:
-                        try:
-                            txn_response = self._make_request(
-                                "GET",
-                                f"/v1/billing/subscriptions/{subscription_id}/transactions",
-                                {"start_time": subscription_data.get("start_time"), "end_time": subscription_data.get("update_time")}
-                            )
-                            if txn_response.status_code == 200:
-                                subscription_data["transactions"] = txn_response.json().get("transactions", [])
-                        except Exception:
-                            # Transactions endpoint might not be available
-                            subscription_data["transactions"] = None
+                    # Note: We don't include subscription transactions here as they're 
+                    # available in the main transactions table with better detail
                     
                     records.append(subscription_data)
                 else:
