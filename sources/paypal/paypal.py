@@ -1005,10 +1005,11 @@ class LakeflowConnect:
         
         # Determine next offset
         if next_index < len(subscription_ids):
+            # More subscriptions to process
             next_offset = {"index": next_index}
         else:
-            # All subscriptions processed
-            next_offset = {"index": next_index}
+            # All subscriptions processed - return same offset to signal completion
+            next_offset = start_offset if start_offset else {"index": current_index}
         
         return iter(records), next_offset
 
