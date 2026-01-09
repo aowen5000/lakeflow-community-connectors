@@ -921,84 +921,79 @@ class LakeflowConnect:
         """
         Internal implementation for reading the 'subscriptions' table.
         
-        Uses PayPal Subscriptions API v1: GET /v1/billing/subscriptions/{id}
-        
-        IMPORTANT: PayPal does NOT support bulk listing of subscriptions.
-        You must provide subscription IDs in table_options.
-        
-        Required table_options:
-            - subscription_ids: List or comma-separated string of subscription IDs
-                                Example: ["I-ABC123", "I-DEF456"] or "I-ABC123,I-DEF456"
+        Uses PayPal Subscriptions API v1: GET /v1/billing/subscriptions
+        https://developer.paypal.com/docs/api/subscriptions/v1/#subscriptions_list
         
         Optional table_options:
-            - include_transactions: If true, fetch transaction details for each subscription
+            - plan_id: Filter subscriptions by billing plan ID
+            - product_id: Filter subscriptions by product ID
+            - start_time: Filter subscriptions created on or after this time (RFC 3339 format)
+            - end_time: Filter subscriptions created before this time (RFC 3339 format)
+            - page_size: Number of subscriptions to return per page (default 20, max 100)
         """
-        # Get subscription IDs from table_options
-        subscription_ids = table_options.get("subscription_ids", [])
+        # Get page size from options (default 20, max 100)
+        try:
+            page_size = int(table_options.get("page_size", 20))
+        except (TypeError, ValueError):
+            page_size = 20
+        page_size = max(1, min(page_size, 100))
         
-        # Handle comma-separated string or list
-        if isinstance(subscription_ids, str):
-            subscription_ids = [sid.strip() for sid in subscription_ids.split(",") if sid.strip()]
-        elif not isinstance(subscription_ids, list):
-            raise ValueError(
-                "table_options for 'subscriptions' must include 'subscription_ids' as a list or comma-separated string. "
-                "Example: {'subscription_ids': ['I-ABC123', 'I-DEF456']} or {'subscription_ids': 'I-ABC123,I-DEF456'}. "
-                "\n\nNote: PayPal does not support bulk listing of subscriptions - you must provide specific IDs."
+        # Get starting page from offset (default 1)
+        if start_offset and isinstance(start_offset, dict):
+            page = start_offset.get("page", 1)
+        else:
+            page = 1
+        
+        # Build query parameters
+        params = {
+            "page_size": page_size,
+            "page": page,
+            "total_required": "true"  # Get total count in response
+        }
+        
+        # Add optional filters
+        if "plan_id" in table_options:
+            params["plan_id"] = table_options["plan_id"]
+        if "product_id" in table_options:
+            params["product_id"] = table_options["product_id"]
+        if "start_time" in table_options:
+            params["start_time"] = table_options["start_time"]
+        if "end_time" in table_options:
+            params["end_time"] = table_options["end_time"]
+        
+        # Make API request
+        response = self._make_request("GET", "/v1/billing/subscriptions", params)
+        
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"PayPal API error for subscriptions: {response.status_code} {response.text}"
             )
         
-        if not subscription_ids:
+        data = response.json()
+        
+        # Extract subscriptions array
+        subscriptions = data.get("subscriptions", [])
+        if not isinstance(subscriptions, list):
             raise ValueError(
-                "table_options for 'subscriptions' must include at least one subscription ID in 'subscription_ids'. "
-                "\n\nNote: PayPal does not support bulk listing of subscriptions - you must provide specific IDs. "
-                "You can find subscription IDs in your PayPal dashboard or from subscription creation responses."
+                f"Unexpected response format for subscriptions: {type(subscriptions).__name__}"
             )
         
-        # Check if we've already processed all subscriptions
-        # If called again after first fetch, return empty
-        if start_offset is not None:
-            # Already processed - return empty with SAME offset to signal completion
-            return iter([]), start_offset
-        
-        # First call: Fetch ALL subscription details in one batch
+        # Process records - keep full subscription data
         records: list[dict[str, Any]] = []
-        include_transactions = table_options.get("include_transactions", "false").lower() == "true"
+        for subscription in subscriptions:
+            records.append(subscription)
         
-        # Process ALL subscriptions
-        for subscription_id in subscription_ids:
-            try:
-                # Fetch subscription details
-                response = self._make_request("GET", f"/v1/billing/subscriptions/{subscription_id}")
-                
-                if response.status_code == 200:
-                    subscription_data = response.json()
-                    
-                    # Optionally fetch transactions for this subscription
-                    if include_transactions:
-                        try:
-                            txn_response = self._make_request(
-                                "GET",
-                                f"/v1/billing/subscriptions/{subscription_id}/transactions",
-                                {"start_time": subscription_data.get("start_time"), "end_time": subscription_data.get("update_time")}
-                            )
-                            if txn_response.status_code == 200:
-                                subscription_data["transactions"] = txn_response.json().get("transactions", [])
-                        except Exception:
-                            # Transactions endpoint might not be available
-                            subscription_data["transactions"] = None
-                    
-                    records.append(subscription_data)
-                else:
-                    # Log error but continue (subscription might not exist or be inaccessible)
-                    print(f"Warning: Could not fetch subscription {subscription_id}: {response.status_code}")
-            
-            except Exception as e:
-                # Log error but continue processing other subscriptions
-                print(f"Warning: Error fetching subscription {subscription_id}: {e}")
+        # Check if there are more pages
+        total_items = data.get("total_items", 0)
+        total_pages = data.get("total_pages", 0)
         
-        # CRITICAL: Return empty dict {} as next_offset to signal completion
-        # Databricks rule: returning a different offset signals "done"
-        # First call gets None, returns {}, next call gets {}, returns {} (same = done)
-        next_offset = {}
+        # Determine next offset
+        if page < total_pages:
+            # More pages available
+            next_offset = {"page": page + 1}
+        else:
+            # No more pages - return same offset to signal completion
+            next_offset = start_offset if start_offset else {"page": page}
         
         return iter(records), next_offset
 
