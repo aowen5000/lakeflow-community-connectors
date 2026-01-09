@@ -970,6 +970,7 @@ class LakeflowConnect:
         
         # First call: Fetch ALL subscription details in one batch
         records: list[dict[str, Any]] = []
+        api_results = []  # Track results for each ID
         
         # Process ALL subscriptions
         for subscription_id in subscription_ids:
@@ -984,13 +985,65 @@ class LakeflowConnect:
                     # available in the main transactions table with better detail
                     
                     records.append(subscription_data)
+                    api_results.append({
+                        "id": subscription_id,
+                        "status": "SUCCESS",
+                        "http_code": 200,
+                        "subscription_status": subscription_data.get("status", "UNKNOWN")
+                    })
                 else:
                     # Log error but continue (subscription might not exist or be inaccessible)
-                    print(f"Warning: Could not fetch subscription {subscription_id}: {response.status_code}")
+                    error_message = response.text[:200] if response.text else "No error details"
+                    api_results.append({
+                        "id": subscription_id,
+                        "status": "FAILED",
+                        "http_code": response.status_code,
+                        "error": error_message
+                    })
+                    print(f"Warning: Could not fetch subscription {subscription_id}: {response.status_code} - {error_message}")
             
             except Exception as e:
                 # Log error but continue processing other subscriptions
+                api_results.append({
+                    "id": subscription_id,
+                    "status": "EXCEPTION",
+                    "error": str(e)
+                })
                 print(f"Warning: Error fetching subscription {subscription_id}: {e}")
+        
+        # Print summary warning if some or all subscriptions failed
+        successful = sum(1 for r in api_results if r["status"] == "SUCCESS")
+        failed = len(api_results) - successful
+        
+        print(f"\n{'='*70}")
+        print(f"SUBSCRIPTIONS API CALL SUMMARY")
+        print(f"{'='*70}")
+        print(f"Total subscription IDs requested: {len(subscription_ids)}")
+        print(f"Successfully fetched: {successful}")
+        print(f"Failed to fetch: {failed}")
+        print(f"Records in dataframe before return: {len(records)}")
+        
+        if failed > 0:
+            print(f"\n⚠️  WARNING: {failed}/{len(subscription_ids)} subscription(s) could not be fetched")
+            print(f"\nFailed subscriptions:")
+            for result in api_results:
+                if result["status"] != "SUCCESS":
+                    if result.get("http_code"):
+                        print(f"  - {result['id']}: HTTP {result['http_code']} - {result.get('error', 'Unknown error')}")
+                    else:
+                        print(f"  - {result['id']}: {result.get('error', 'Unknown error')}")
+        
+        if len(records) == 0:
+            print(f"\n❌ CRITICAL WARNING: Returning 0 records!")
+            print(f"   All {len(subscription_ids)} subscription ID(s) failed to fetch.")
+            print(f"   This will result in an empty table.")
+            print(f"   Common causes:")
+            print(f"     - Subscription IDs don't exist or have been deleted")
+            print(f"     - Subscription IDs from different PayPal account")
+            print(f"     - PayPal Sandbox was reset")
+            print(f"     - API authentication issue")
+        
+        print(f"{'='*70}\n")
         
         # CRITICAL: Return empty dict {} as next_offset to signal completion
         # Databricks rule: First call gets None, returns {}
