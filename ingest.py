@@ -51,7 +51,7 @@ pipeline_spec = {
                 "destination_table": "subscriptions",
                 "table_configuration": {
                     "scd_type": "SCD_TYPE_1",
-                    "subscription_ids": ["I-UGRPYC05ATB2", "I-8C7CWF5AB208", "I-N4D2YUNDR8BW", "I-FLKBV5UEJ5SJ", "I-V8PCU045H25R"]
+                    "subscription_ids": ["I-SNUCVEVHXJDA", "I-PCFYTVKEERG5", "I-W0Y9D1HNV5VG"]
                 },
             }
         },
