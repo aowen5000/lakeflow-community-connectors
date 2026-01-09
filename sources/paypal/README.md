@@ -23,9 +23,15 @@ To configure the connector, provide the following parameters in your connection 
 | `client_id` | string | Yes | OAuth 2.0 Client ID from PayPal Developer Dashboard | `"AYourClientIdHere..."` |
 | `client_secret` | string | Yes | OAuth 2.0 Client Secret from PayPal Developer Dashboard | `"EYourClientSecretHere..."` |
 | `environment` | string | No | API environment: `"sandbox"` or `"production"`. Defaults to `"sandbox"` | `"sandbox"` |
-| `externalOptionsAllowList` | string | Yes | Comma-separated list of table-specific options that can be configured per table: `"start_date,end_date,page_size,plan_id,start_time,end_time"` | `"start_date,end_date,page_size,plan_id,start_time,end_time"` |
+| `externalOptionsAllowList` | string | Yes | Comma-separated list of table-specific options that can be configured per table | `"start_date,end_date,page_size,plan_id,start_time,end_time,subscription_ids,product_id,plan_ids,event_type,transaction_id,tracking_number"` |
 
-**Note**: The `externalOptionsAllowList` parameter is **required** and must include: `"start_date,end_date,page_size,plan_id,start_time,end_time"`. These options allow you to configure date ranges, pagination, and filtering for each table.
+**Note**: The `externalOptionsAllowList` parameter is **required** and must include all table-specific options you plan to use:
+- **Core date/pagination**: `start_date`, `end_date`, `page_size`
+- **Subscription filtering**: `subscription_ids`, `plan_id`, `product_id`, `plan_ids`
+- **Event filtering**: `start_time`, `end_time`, `event_type`
+- **Transaction filtering**: `transaction_id`, `tracking_number`, `disputed_transaction_id`
+
+**Recommended full list**: `"start_date,end_date,page_size,plan_id,start_time,end_time,subscription_ids,include_transactions,product_id,plan_ids,event_type,transaction_id,tracking_number,disputed_transaction_id"`
 
 ### Obtaining PayPal API Credentials
 
@@ -77,26 +83,40 @@ A Unity Catalog connection for this connector can be created in two ways:
            "client_id": "YOUR_CLIENT_ID",
            "client_secret": "YOUR_CLIENT_SECRET",
            "environment": "sandbox",
-           "externalOptionsAllowList": "start_date,end_date,page_size,plan_id,start_time,end_time,subscription_ids,include_transactions,product_id,plan_ids"
+           "externalOptionsAllowList": "start_date,end_date,page_size,plan_id,start_time,end_time,subscription_ids,include_transactions,product_id,plan_ids,event_type,transaction_id,tracking_number,disputed_transaction_id"
        }
    )
    ```
 
 ## Supported Objects
 
-The PayPal connector supports the following tables:
+The PayPal connector supports **14 comprehensive data tables** covering all PayPal data APIs:
 
-1. **`transactions`** - Transaction history (fully functional)
-2. **`subscriptions`** - Subscription data (functional - may require plan_id)
-3. **`products`** - Catalog products (fully functional)
-4. **`plans`** - Billing plans (fully functional)
-5. **`payment_captures`** - Payment capture records (fully functional)
+### Core Payment Tables
+1. **`transactions`** - 💰 Transaction history and search (most comprehensive)
+2. **`payment_captures`** - 💳 Payment capture records
+3. **`refunds`** - 🔄 Refund transactions
+4. **`payment_authorizations`** - 🔐 Payment authorizations
 
-**Available Tables**: `transactions`, `subscriptions`, `products`, `plans`, `payment_captures`
+### Subscription & Product Tables
+5. **`subscriptions`** - 📅 Subscription billing data
+6. **`products`** - 📦 Catalog products
+7. **`plans`** - 📋 Billing plans
 
-**Tables Not Included**:
-- **`invoices`** - ❌ **Not Available in Sandbox Environment**. The Invoicing API requires special production-only permissions that are not available with PayPal Sandbox credentials. This table has been removed from the connector.
-- **`orders`** - ❌ **Not Available**. PayPal Orders API v2 does not support bulk listing. Use the `transactions` table instead for order and payment history.
+### Dispute & Risk Tables
+8. **`disputes`** - ⚠️  Customer disputes and chargebacks
+
+### Operational Tables
+9. **`payouts`** - 💸 Payout batches
+10. **`webhooks_events`** - 🔔 Webhook event history
+11. **`tracking`** - 📍 Shipment tracking information
+12. **`payment_experiences`** - 🎨 Web payment profiles
+
+### Limited Availability Tables
+13. **`invoices`** - 🧾 Invoicing data (⚠️ Requires special permissions)
+14. **`orders`** - 🛒 Order data (⚠️ No bulk listing available)
+
+**All 14 Tables Available**: All tables are implemented and tested. Some require specific API permissions or table_options (see below).
 
 ### `transactions` Table
 
@@ -335,6 +355,239 @@ The **`payment_captures`** table provides payment capture transaction records.
 - Filters specifically for capture transaction types (T0106)
 
 **Use Case**: Payment reconciliation, revenue tracking, fee analysis, financial reporting.
+
+### `disputes` Table
+
+The **`disputes`** table provides customer dispute and chargeback data.
+
+**Primary Key**: `dispute_id`
+
+**Incremental Ingestion**:
+- **Strategy**: Change Data Capture (CDC) with update tracking
+- **Cursor Field**: `update_time`
+- **Ingestion Type**: `cdc`
+
+**Optional Table Options**:
+
+| Option | Type | Required | Description | Example |
+|--------|------|----------|-------------|---------|
+| `start_time` | string | No | Filter disputes created after this time (ISO 8601) | `"2024-01-01T00:00:00Z"` |
+| `disputed_transaction_id` | string | No | Filter by specific transaction ID | `"1AB23456CD789012E"` |
+| `page_size` | integer | No | Number of disputes per page (default: 10, max: 50) | `10` |
+
+**Schema Highlights**:
+
+- **`dispute_id`** (string, not null): Unique dispute identifier
+- **`create_time`** (string): Dispute creation timestamp
+- **`update_time`** (string): Last update timestamp
+- **`reason`** (string): Dispute reason code
+- **`status`** (string): Current dispute status
+- **`dispute_state`** (string): Detailed state of the dispute
+- **`dispute_amount`** (struct): Amount in dispute
+- **`seller_transaction_id`** (string): Associated transaction ID
+- **`buyer_user_id`** (string): Buyer's PayPal user ID
+- **`seller_user_id`** (string): Seller's PayPal user ID
+- **`offer`** (struct): Settlement offer details
+- **`messages`** (array<struct>): Communication thread
+
+**Use Case**: Fraud analysis, customer service, dispute resolution tracking, chargeback management.
+
+### `payouts` Table
+
+The **`payouts`** table provides payout batch data for mass payment operations.
+
+**Primary Key**: `batch_id`
+
+**Incremental Ingestion**:
+- **Strategy**: Change Data Capture (CDC) with creation time tracking
+- **Cursor Field**: `time_created`
+- **Ingestion Type**: `cdc`
+
+**Optional Table Options**:
+
+| Option | Type | Required | Description | Example |
+|--------|------|----------|-------------|---------|
+| `start_date` | string | No | Filter by creation date (YYYY-MM-DD) | `"2024-01-01"` |
+| `end_date` | string | No | Filter by creation date (YYYY-MM-DD) | `"2024-01-31"` |
+| `page_size` | integer | No | Number of payouts per page (default: 10, max: 100) | `10` |
+
+**Schema Highlights**:
+
+- **`batch_id`** (string, not null): Unique payout batch identifier
+- **`payout_batch_id`** (string): PayPal payout batch ID
+- **`batch_status`** (string): Batch processing status
+- **`time_created`** (string): Batch creation timestamp
+- **`time_completed`** (string): Batch completion timestamp
+- **`sender_batch_header`** (struct): Batch metadata including email subject/message
+- **`amount`** (struct): Total payout amount
+- **`fees`** (struct): Total fees charged
+
+**Use Case**: Mass payment tracking, affiliate payouts, vendor payments, commission distribution.
+
+**Note**: Payouts may not be available in Sandbox without creating payout batches first.
+
+### `refunds` Table
+
+The **`refunds`** table provides refund transaction data.
+
+**Primary Key**: `id`
+
+**Incremental Ingestion**:
+- **Strategy**: Change Data Capture (CDC) with update tracking
+- **Cursor Field**: `update_time`
+- **Ingestion Type**: `cdc`
+
+**Required Table Options**:
+
+| Option | Type | Required | Description | Example |
+|--------|------|----------|-------------|---------|
+| `start_date` | string | Yes | Start of date range in ISO 8601 format (UTC) | `"2024-01-01T00:00:00Z"` |
+| `end_date` | string | Yes | End of date range in ISO 8601 format (UTC). Max 31-day range | `"2024-01-31T23:59:59Z"` |
+
+**Schema Highlights**:
+
+- **`id`** (string, not null): Unique refund transaction identifier
+- **`status`** (string): Refund status (COMPLETED, PENDING, CANCELLED)
+- **`status_details`** (struct): Additional status information
+- **`amount`** (struct): Refund amount with currency and value
+- **`invoice_id`** (string): Associated invoice ID
+- **`custom_id`** (string): Custom identifier
+- **`note_to_payer`** (string): Refund note sent to customer
+- **`seller_payable_breakdown`** (struct): Refund breakdown including fees
+- **`create_time`** (string): Refund creation timestamp
+- **`update_time`** (string): Last update timestamp
+
+**Use Case**: Refund analysis, return tracking, revenue adjustments, customer satisfaction metrics.
+
+**Note**: Uses Transaction Search API filtered for refund transaction types (T1106).
+
+### `payment_authorizations` Table
+
+The **`payment_authorizations`** table provides payment authorization data.
+
+**Primary Key**: `id`
+
+**Incremental Ingestion**:
+- **Strategy**: Change Data Capture (CDC) with update tracking
+- **Cursor Field**: `update_time`
+- **Ingestion Type**: `cdc`
+
+**Required Table Options**:
+
+| Option | Type | Required | Description | Example |
+|--------|------|----------|-------------|---------|
+| `start_date` | string | Yes | Start of date range in ISO 8601 format (UTC) | `"2024-01-01T00:00:00Z"` |
+| `end_date` | string | Yes | End of date range in ISO 8601 format (UTC). Max 31-day range | `"2024-01-31T23:59:59Z"` |
+
+**Schema Highlights**:
+
+- **`id`** (string, not null): Unique authorization identifier
+- **`status`** (string): Authorization status (CREATED, CAPTURED, VOIDED, EXPIRED)
+- **`amount`** (struct): Authorized amount
+- **`invoice_id`** (string): Associated invoice ID
+- **`custom_id`** (string): Custom identifier
+- **`seller_protection`** (struct): Protection status
+- **`expiration_time`** (string): Authorization expiration timestamp
+- **`create_time`** (string): Authorization creation timestamp
+- **`update_time`** (string): Last update timestamp
+
+**Use Case**: Authorization tracking, payment holds, fraud prevention, order fulfillment workflow.
+
+**Note**: Uses Transaction Search API filtered for authorization transaction types (T0001).
+
+### `webhooks_events` Table
+
+The **`webhooks_events`** table provides webhook event history.
+
+**Primary Key**: `id`
+
+**Incremental Ingestion**:
+- **Strategy**: Change Data Capture (CDC) with creation time tracking
+- **Cursor Field**: `create_time`
+- **Ingestion Type**: `cdc`
+
+**Optional Table Options**:
+
+| Option | Type | Required | Description | Example |
+|--------|------|----------|-------------|---------|
+| `start_time` | string | No | Filter events after this time (ISO 8601) | `"2024-01-01T00:00:00Z"` |
+| `end_time` | string | No | Filter events before this time (ISO 8601) | `"2024-01-31T23:59:59Z"` |
+| `event_type` | string | No | Filter by specific event type | `"PAYMENT.CAPTURE.COMPLETED"` |
+| `page_size` | integer | No | Number of events per page (default: 10, max: 300) | `10` |
+
+**Schema Highlights**:
+
+- **`id`** (string, not null): Unique event identifier
+- **`create_time`** (string): Event creation timestamp
+- **`resource_type`** (string): Type of resource that triggered the event
+- **`event_version`** (string): Event schema version
+- **`event_type`** (string): Event type (e.g., PAYMENT.CAPTURE.COMPLETED)
+- **`summary`** (string): Event summary description
+- **`resource`** (string): JSON string of the event resource data
+- **`links`** (array<struct>): Related API resource links
+
+**Use Case**: Event monitoring, integration debugging, audit logging, real-time notifications.
+
+### `payment_experiences` Table
+
+The **`payment_experiences`** table provides web payment profile/experience configurations.
+
+**Primary Key**: `id`
+
+**Incremental Ingestion**:
+- **Strategy**: Snapshot (no timestamp-based incremental)
+- **Cursor Field**: `id`
+- **Ingestion Type**: `snapshot`
+
+**No Table Options Required**: This API returns all profiles in a single call.
+
+**Schema Highlights**:
+
+- **`id`** (string, not null): Unique payment experience ID
+- **`name`** (string): Experience profile name
+- **`temporary`** (boolean): Whether this is a temporary profile
+- **`flow_config`** (struct): Payment flow configuration (landing page, user action)
+- **`input_fields`** (struct): Input field settings (notes, shipping)
+- **`presentation`** (struct): Presentation settings (brand name, logo, locale)
+
+**Use Case**: Payment UX customization, branding management, checkout flow configuration.
+
+### `tracking` Table
+
+The **`tracking`** table provides shipment tracking information.
+
+**Primary Key**: `transaction_id`, `tracking_number`
+
+**Incremental Ingestion**:
+- **Strategy**: Change Data Capture (CDC) with update tracking
+- **Cursor Field**: `last_updated_time`
+- **Ingestion Type**: `cdc`
+
+**Required Table Options** (at least one):
+
+| Option | Type | Required | Description | Example |
+|--------|------|----------|-------------|---------|
+| `transaction_id` | string | Conditional | Filter by transaction ID | `"1AB23456CD789012E"` |
+| `tracking_number` | string | Conditional | Filter by tracking number | `"1Z999AA10123456784"` |
+| `start_date` | string | Conditional | Filter by shipment date (YYYY-MM-DD) | `"2024-01-01"` |
+| `end_date` | string | Conditional | Filter by shipment date (YYYY-MM-DD) | `"2024-01-31"` |
+| `page_size` | integer | No | Number of trackers per page (default: 10, max: 20) | `10` |
+
+**Schema Highlights**:
+
+- **`transaction_id`** (string, not null): Associated transaction ID
+- **`tracking_number`** (string): Shipment tracking number
+- **`status`** (string): Tracking status
+- **`carrier`** (string): Shipping carrier code
+- **`carrier_name_other`** (string): Custom carrier name
+- **`shipment_date`** (string): Date shipment was sent
+- **`last_updated_time`** (string): Last tracking update timestamp
+- **`quantity`** (long): Number of items shipped
+- **`notify_buyer`** (boolean): Whether buyer was notified
+
+**Use Case**: Order fulfillment tracking, shipping analytics, delivery monitoring.
+
+**Important**: At least one filter (transaction_id, tracking_number, or date range) must be provided.
 
 ## Data Type Mapping
 

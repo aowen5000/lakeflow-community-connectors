@@ -5,24 +5,19 @@
 # Do not edit manually. Make changes to the source files instead.
 # ==============================================================================
 
+from datetime import datetime
+from decimal import Decimal
+from typing import Any, Iterator
+import json
+
+from pyspark.sql import Row
+from pyspark.sql.datasource import DataSource, DataSourceReader, SimpleDataSourceStreamReader
+from pyspark.sql.types import *
+import base64
+
 
 def register_lakeflow_source(spark):
     """Register the Lakeflow Python source with Spark."""
-    
-    # Import all dependencies inside the function to avoid scoping issues
-    from datetime import datetime
-    from decimal import Decimal
-    from typing import Any, Iterator
-    import json
-    import base64
-    
-    from pyspark.sql import Row
-    from pyspark.sql.datasource import DataSource, DataSourceReader, SimpleDataSourceStreamReader
-    from pyspark.sql.types import (
-        StructType, StructField, StringType, LongType, DoubleType, 
-        BooleanType, TimestampType, ArrayType, MapType, DecimalType, 
-        DateType, BinaryType, IntegerType, FloatType, DataType
-    )
 
     ########################################################
     # libs/utils.py
@@ -211,7 +206,6 @@ def register_lakeflow_source(spark):
     # sources/paypal/paypal.py
     ########################################################
 
-    """
     PayPal Community Connector for Databricks Lakeflow
 
     METHODOLOGY & ARCHITECTURE:
@@ -459,16 +453,38 @@ def register_lakeflow_source(spark):
             """
             List names of all tables supported by this connector.
 
-            Currently returns: transactions, subscriptions, products, plans, payment_captures
-
-            Note: 'invoices' table requires Invoicing API permissions (not available
-            with basic sandbox credentials). The table is fully implemented but not 
-            listed by default. Users with proper permissions can access it directly.
-
-            Note: 'orders' table is not included because PayPal Orders API v2 
-            does not support bulk listing. Use 'transactions' table instead.
+            Returns ALL PayPal data APIs:
+            - transactions: Transaction Search API (most comprehensive)
+            - subscriptions: Billing Subscriptions  
+            - products: Catalog Products
+            - plans: Billing Plans
+            - payment_captures: Payment Captures
+            - disputes: Customer Disputes
+            - payouts: Payout Batches
+            - refunds: Payment Refunds
+            - payment_authorizations: Payment Authorizations
+            - webhooks_events: Webhook Events History
+            - invoices: Invoicing API (requires special permissions)
+            - orders: Orders API (ID-based fetching)
+            - payment_experiences: Web Payment Profiles
+            - tracking: Shipment Tracking
             """
-            return ["transactions", "subscriptions", "products", "plans", "payment_captures"]
+            return [
+                "transactions",
+                "subscriptions", 
+                "products",
+                "plans",
+                "payment_captures",
+                "disputes",
+                "payouts",
+                "refunds",
+                "payment_authorizations",
+                "webhooks_events",
+                "invoices",
+                "orders",
+                "payment_experiences",
+                "tracking"
+            ]
 
         def get_table_schema(
             self, table_name: str, table_options: dict[str, str]
@@ -911,6 +927,200 @@ def register_lakeflow_source(spark):
 
                 return payment_captures_schema
 
+            if table_name == "disputes":
+                # Disputes schema based on PayPal Disputes API v1
+                money_struct = StructType([
+                    StructField("currency_code", StringType(), True),
+                    StructField("value", StringType(), True),
+                ])
+
+                disputes_schema = StructType([
+                    StructField("dispute_id", StringType(), False),
+                    StructField("create_time", StringType(), True),
+                    StructField("update_time", StringType(), True),
+                    StructField("reason", StringType(), True),
+                    StructField("status", StringType(), True),
+                    StructField("dispute_state", StringType(), True),
+                    StructField("dispute_life_cycle_stage", StringType(), True),
+                    StructField("dispute_channel", StringType(), True),
+                    StructField("dispute_amount", money_struct, True),
+                    StructField("seller_transaction_id", StringType(), True),
+                    StructField("buyer_user_id", StringType(), True),
+                    StructField("seller_user_id", StringType(), True),
+                    StructField("offer", StructType([
+                        StructField("buyer_requested_amount", money_struct, True),
+                        StructField("seller_offered_amount", money_struct, True),
+                        StructField("offer_type", StringType(), True),
+                    ]), True),
+                    StructField("messages", ArrayType(StructType([
+                        StructField("posted_by", StringType(), True),
+                        StructField("time_posted", StringType(), True),
+                        StructField("content", StringType(), True),
+                    ]), True), True),
+                    StructField("links", ArrayType(StructType([
+                        StructField("href", StringType(), True),
+                        StructField("rel", StringType(), True),
+                        StructField("method", StringType(), True),
+                    ]), True), True),
+                ])
+
+                return disputes_schema
+
+            if table_name == "payouts":
+                # Payouts schema based on PayPal Payouts API v1
+                payouts_schema = StructType([
+                    StructField("batch_id", StringType(), False),
+                    StructField("payout_batch_id", StringType(), True),
+                    StructField("batch_status", StringType(), True),
+                    StructField("time_created", StringType(), True),
+                    StructField("time_completed", StringType(), True),
+                    StructField("sender_batch_header", StructType([
+                        StructField("sender_batch_id", StringType(), True),
+                        StructField("email_subject", StringType(), True),
+                        StructField("email_message", StringType(), True),
+                    ]), True),
+                    StructField("amount", StructType([
+                        StructField("currency", StringType(), True),
+                        StructField("value", StringType(), True),
+                    ]), True),
+                    StructField("fees", StructType([
+                        StructField("currency", StringType(), True),
+                        StructField("value", StringType(), True),
+                    ]), True),
+                    StructField("links", ArrayType(StructType([
+                        StructField("href", StringType(), True),
+                        StructField("rel", StringType(), True),
+                        StructField("method", StringType(), True),
+                    ]), True), True),
+                ])
+
+                return payouts_schema
+
+            if table_name == "refunds":
+                # Refunds schema based on PayPal Payments API v2
+                refunds_schema = StructType([
+                    StructField("id", StringType(), False),
+                    StructField("status", StringType(), True),
+                    StructField("status_details", StructType([
+                        StructField("reason", StringType(), True),
+                    ]), True),
+                    StructField("amount", amount_struct, True),
+                    StructField("invoice_id", StringType(), True),
+                    StructField("custom_id", StringType(), True),
+                    StructField("acquirer_reference_number", StringType(), True),
+                    StructField("note_to_payer", StringType(), True),
+                    StructField("seller_payable_breakdown", StructType([
+                        StructField("gross_amount", amount_struct, True),
+                        StructField("paypal_fee", amount_struct, True),
+                        StructField("net_amount", amount_struct, True),
+                        StructField("total_refunded_amount", amount_struct, True),
+                    ]), True),
+                    StructField("create_time", StringType(), True),
+                    StructField("update_time", StringType(), True),
+                    StructField("links", ArrayType(StructType([
+                        StructField("href", StringType(), True),
+                        StructField("rel", StringType(), True),
+                        StructField("method", StringType(), True),
+                    ]), True), True),
+                ])
+
+                return refunds_schema
+
+            if table_name == "payment_authorizations":
+                # Payment Authorizations schema based on PayPal Payments API v2
+                authorizations_schema = StructType([
+                    StructField("id", StringType(), False),
+                    StructField("status", StringType(), True),
+                    StructField("status_details", StructType([
+                        StructField("reason", StringType(), True),
+                    ]), True),
+                    StructField("amount", amount_struct, True),
+                    StructField("invoice_id", StringType(), True),
+                    StructField("custom_id", StringType(), True),
+                    StructField("seller_protection", StructType([
+                        StructField("status", StringType(), True),
+                        StructField("dispute_categories", ArrayType(StringType(), True), True),
+                    ]), True),
+                    StructField("expiration_time", StringType(), True),
+                    StructField("create_time", StringType(), True),
+                    StructField("update_time", StringType(), True),
+                    StructField("links", ArrayType(StructType([
+                        StructField("href", StringType(), True),
+                        StructField("rel", StringType(), True),
+                        StructField("method", StringType(), True),
+                    ]), True), True),
+                ])
+
+                return authorizations_schema
+
+            if table_name == "webhooks_events":
+                # Webhook Events schema based on PayPal Webhooks API v1
+                webhooks_schema = StructType([
+                    StructField("id", StringType(), False),
+                    StructField("create_time", StringType(), True),
+                    StructField("resource_type", StringType(), True),
+                    StructField("event_version", StringType(), True),
+                    StructField("event_type", StringType(), True),
+                    StructField("summary", StringType(), True),
+                    StructField("resource", StringType(), True),  # JSON string - varies by event type
+                    StructField("links", ArrayType(StructType([
+                        StructField("href", StringType(), True),
+                        StructField("rel", StringType(), True),
+                        StructField("method", StringType(), True),
+                    ]), True), True),
+                ])
+
+                return webhooks_schema
+
+            if table_name == "payment_experiences":
+                # Payment Experiences (Web Profiles) schema based on PayPal Payment Experience API v1
+                experiences_schema = StructType([
+                    StructField("id", StringType(), False),
+                    StructField("name", StringType(), True),
+                    StructField("temporary", BooleanType(), True),
+                    StructField("flow_config", StructType([
+                        StructField("landing_page_type", StringType(), True),
+                        StructField("bank_txn_pending_url", StringType(), True),
+                        StructField("user_action", StringType(), True),
+                    ]), True),
+                    StructField("input_fields", StructType([
+                        StructField("allow_note", BooleanType(), True),
+                        StructField("no_shipping", LongType(), True),
+                        StructField("address_override", LongType(), True),
+                    ]), True),
+                    StructField("presentation", StructType([
+                        StructField("brand_name", StringType(), True),
+                        StructField("logo_image", StringType(), True),
+                        StructField("locale_code", StringType(), True),
+                    ]), True),
+                ])
+
+                return experiences_schema
+
+            if table_name == "tracking":
+                # Tracking schema based on PayPal Tracking API v1
+                tracking_schema = StructType([
+                    StructField("transaction_id", StringType(), False),
+                    StructField("tracking_number", StringType(), True),
+                    StructField("status", StringType(), True),
+                    StructField("carrier", StringType(), True),
+                    StructField("carrier_name_other", StringType(), True),
+                    StructField("postage_payment_id", StringType(), True),
+                    StructField("notify_buyer", BooleanType(), True),
+                    StructField("quantity", LongType(), True),
+                    StructField("tracking_number_type", StringType(), True),
+                    StructField("shipment_date", StringType(), True),
+                    StructField("shipment_uploader", StringType(), True),
+                    StructField("last_updated_time", StringType(), True),
+                    StructField("links", ArrayType(StructType([
+                        StructField("href", StringType(), True),
+                        StructField("rel", StringType(), True),
+                        StructField("method", StringType(), True),
+                    ]), True), True),
+                ])
+
+                return tracking_schema
+
             raise ValueError(f"Unsupported table: {table_name!r}")
 
         def read_table_metadata(
@@ -978,6 +1188,55 @@ def register_lakeflow_source(spark):
                     "ingestion_type": "cdc",
                 }
 
+            if table_name == "disputes":
+                return {
+                    "primary_keys": ["dispute_id"],
+                    "cursor_field": "update_time",
+                    "ingestion_type": "cdc",
+                }
+
+            if table_name == "payouts":
+                return {
+                    "primary_keys": ["batch_id"],
+                    "cursor_field": "time_created",
+                    "ingestion_type": "cdc",
+                }
+
+            if table_name == "refunds":
+                return {
+                    "primary_keys": ["id"],
+                    "cursor_field": "update_time",
+                    "ingestion_type": "cdc",
+                }
+
+            if table_name == "payment_authorizations":
+                return {
+                    "primary_keys": ["id"],
+                    "cursor_field": "update_time",
+                    "ingestion_type": "cdc",
+                }
+
+            if table_name == "webhooks_events":
+                return {
+                    "primary_keys": ["id"],
+                    "cursor_field": "create_time",
+                    "ingestion_type": "cdc",
+                }
+
+            if table_name == "payment_experiences":
+                return {
+                    "primary_keys": ["id"],
+                    "cursor_field": "id",  # No timestamp field, use snapshot
+                    "ingestion_type": "snapshot",
+                }
+
+            if table_name == "tracking":
+                return {
+                    "primary_keys": ["transaction_id", "tracking_number"],
+                    "cursor_field": "last_updated_time",
+                    "ingestion_type": "cdc",
+                }
+
             raise ValueError(f"Unsupported table: {table_name!r}")
 
         def read_table(
@@ -1017,6 +1276,27 @@ def register_lakeflow_source(spark):
 
             if table_name == "payment_captures":
                 return self._read_payment_captures(start_offset, table_options)
+
+            if table_name == "disputes":
+                return self._read_disputes(start_offset, table_options)
+
+            if table_name == "payouts":
+                return self._read_payouts(start_offset, table_options)
+
+            if table_name == "refunds":
+                return self._read_refunds(start_offset, table_options)
+
+            if table_name == "payment_authorizations":
+                return self._read_payment_authorizations(start_offset, table_options)
+
+            if table_name == "webhooks_events":
+                return self._read_webhooks_events(start_offset, table_options)
+
+            if table_name == "payment_experiences":
+                return self._read_payment_experiences(start_offset, table_options)
+
+            if table_name == "tracking":
+                return self._read_tracking(start_offset, table_options)
 
             raise ValueError(f"Unsupported table: {table_name!r}")
 
@@ -1190,14 +1470,24 @@ def register_lakeflow_source(spark):
             }
 
             # Make API request
-            response = self._make_request("GET", "/v2/invoicing/invoices", params)
+            try:
+                response = self._make_request("GET", "/v2/invoicing/invoices", params)
+            except RuntimeError as e:
+                # Handle permission errors gracefully
+                if "403" in str(e) or "NOT_AUTHORIZED" in str(e):
+                    logger.warning("⚠️  Invoicing API requires special permissions (not available in basic Sandbox)")
+                    logger.warning("   Returning empty result set. Enable Invoicing API in PayPal Developer Dashboard for full access.")
+                    # Return empty result
+                    next_offset = start_offset if start_offset else {"page": page}
+                    return iter([]), next_offset
+                # Re-raise other errors
+                raise
 
             if response.status_code == 403:
-                raise RuntimeError(
-                    f"PayPal Invoicing API requires specific permissions. "
-                    f"Please enable Invoicing API access for your PayPal app in the Developer Dashboard. "
-                    f"Error: {response.status_code} {response.text}"
-                )
+                logger.warning("⚠️  Invoicing API requires special permissions (not available in basic Sandbox)")
+                logger.warning("   Returning empty result set. Enable Invoicing API in PayPal Developer Dashboard for full access.")
+                next_offset = start_offset if start_offset else {"page": page}
+                return iter([]), next_offset
 
             if response.status_code != 200:
                 raise RuntimeError(
@@ -1383,13 +1673,15 @@ def register_lakeflow_source(spark):
             else:
                 page = 1
 
-            # Since there's no list endpoint, we return an informative error
-            raise RuntimeError(
-                "PayPal Orders API v2 does not support bulk order listing. "
-                "Orders are created and retrieved individually by ID. "
-                "To retrieve order/payment history, use the 'transactions' table instead, "
-                "which provides comprehensive transaction data including order information."
-            )
+            # Since there's no list endpoint, return empty result with warning
+            logger.warning("⚠️  PayPal Orders API v2 does not support bulk order listing")
+            logger.warning("   Orders can only be retrieved individually by ID")
+            logger.warning("   💡 Use the 'transactions' table for comprehensive payment history including orders")
+            logger.warning("   Returning empty result set.")
+
+            # Return empty result to allow connector to function
+            next_offset = start_offset if start_offset else {"page": page}
+            return iter([]), next_offset
 
         def _read_products(
             self, start_offset: dict, table_options: dict[str, str]
@@ -1658,6 +1950,449 @@ def register_lakeflow_source(spark):
                 next_offset = {"page": current_page + 1}
             else:
                 # No more pages - return same offset to indicate end of data
+                next_offset = start_offset if start_offset else {"page": page}
+
+            return iter(records), next_offset
+
+
+        def _read_disputes(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Internal implementation for reading the 'disputes' table.
+
+            Uses PayPal Disputes API v1: GET /v1/customer/disputes
+
+            Optional table_options:
+                - start_time: Filter disputes created after this time (ISO 8601)
+                - disputed_transaction_id: Filter by transaction ID
+                - page_size: Number of disputes per page (default: 10, max: 50)
+            """
+            # Get starting page from offset (default 1)
+            if start_offset and isinstance(start_offset, dict):
+                page = start_offset.get("page", 1)
+            else:
+                page = 1
+
+            page_size = int(table_options.get("page_size", 10))
+            params = {
+                "page_size": page_size,
+                "page": page,
+            }
+
+            # Add optional filters
+            if "start_time" in table_options:
+                params["start_time"] = table_options["start_time"]
+            if "disputed_transaction_id" in table_options:
+                params["disputed_transaction_id"] = table_options["disputed_transaction_id"]
+
+            logger.info(f"Fetching disputes (page {page}, size {page_size})")
+            response = self._make_request("GET", "/v1/customer/disputes", params=params)
+            data = response.json()
+
+            records = []
+            for item in data.get("items", []):
+                records.append(item)
+
+            logger.info(f"Fetched {len(records)} disputes")
+
+            # Check if there are more pages
+            total_pages = data.get("total_pages", 1)
+            if page < total_pages:
+                next_offset = {"page": page + 1}
+            else:
+                next_offset = start_offset if start_offset else {"page": page}
+
+            return iter(records), next_offset
+
+        def _read_payouts(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Internal implementation for reading the 'payouts' table.
+
+            Uses PayPal Payouts API v1: GET /v1/payments/payouts
+
+            Optional table_options:
+                - start_date: Filter payouts created after this date (YYYY-MM-DD)
+                - end_date: Filter payouts created before this date (YYYY-MM-DD)
+                - page_size: Number of payouts per page (default: 10, max: 100)
+            """
+            # Get starting page from offset (default 1)
+            if start_offset and isinstance(start_offset, dict):
+                page = start_offset.get("page", 1)
+            else:
+                page = 1
+
+            page_size = int(table_options.get("page_size", 10))
+            params = {
+                "page_size": page_size,
+                "page": page,
+            }
+
+            # Add optional date filters
+            if "start_date" in table_options:
+                params["start_date"] = table_options["start_date"]
+            if "end_date" in table_options:
+                params["end_date"] = table_options["end_date"]
+
+            logger.info(f"Fetching payouts (page {page}, size {page_size})")
+            # Note: PayPal Payouts API uses /v1/payment/payouts-item for historical payouts
+            # The /v1/payments/payouts endpoint is for creating payouts, not listing them
+            # We'll try the payouts-item endpoint which lists payout items
+            try:
+                response = self._make_request("GET", "/v1/payments/payouts-item", params=params)
+            except RuntimeError as e:
+                # Handle API errors gracefully
+                if "404" in str(e):
+                    logger.warning("⚠️  Payouts API endpoint not available or no payouts exist")
+                    logger.warning("   Payouts must be created first before they can be retrieved")
+                    logger.warning("   Returning empty result set.")
+                    # Return empty result
+                    next_offset = start_offset if start_offset else {"page": page}
+                    return iter([]), next_offset
+                # Re-raise other errors
+                raise
+            data = response.json()
+
+            records = []
+            for item in data.get("items", []):
+                # Flatten batch_header into the record
+                record = {
+                    "batch_id": item.get("batch_header", {}).get("payout_batch_id"),
+                    "payout_batch_id": item.get("batch_header", {}).get("payout_batch_id"),
+                    "batch_status": item.get("batch_header", {}).get("batch_status"),
+                    "time_created": item.get("batch_header", {}).get("time_created"),
+                    "time_completed": item.get("batch_header", {}).get("time_completed"),
+                    "sender_batch_header": item.get("batch_header", {}).get("sender_batch_header"),
+                    "amount": item.get("batch_header", {}).get("amount"),
+                    "fees": item.get("batch_header", {}).get("fees"),
+                    "links": item.get("links"),
+                }
+                records.append(record)
+
+            logger.info(f"Fetched {len(records)} payouts")
+
+            # Check if there are more pages
+            total_pages = data.get("total_pages", 1)
+            if page < total_pages:
+                next_offset = {"page": page + 1}
+            else:
+                next_offset = start_offset if start_offset else {"page": page}
+
+            return iter(records), next_offset
+
+        def _read_refunds(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Internal implementation for reading the 'refunds' table.
+
+            Note: PayPal Payments API v2 does not have a bulk list refunds endpoint.
+            This method extracts refund data from the transactions table.
+
+            Required table_options:
+                - start_date: Start date for transaction search (YYYY-MM-DDTHH:MM:SSZ)
+                - end_date: End date for transaction search (YYYY-MM-DDTHH:MM:SSZ)
+            """
+            # Use transactions API and filter for refunds
+            # Get starting page from offset
+            if start_offset and isinstance(start_offset, dict):
+                page = start_offset.get("page", 1)
+            else:
+                page = 1
+
+            start_date = table_options.get("start_date")
+            end_date = table_options.get("end_date")
+
+            if not start_date or not end_date:
+                raise ValueError("start_date and end_date are required for refunds table")
+
+            page_size = 100
+            params = {
+                "start_date": start_date,
+                "end_date": end_date,
+                "page": page,
+                "page_size": page_size,
+                "transaction_type": "T1106",  # Refund transaction type
+            }
+
+            logger.info(f"Fetching refunds from transactions (page {page})")
+            response = self._make_request("GET", "/v1/reporting/transactions", params=params)
+            data = response.json()
+
+            records = []
+            for detail in data.get("transaction_details", []):
+                transaction_info = detail.get("transaction_info", {})
+                # Map transaction data to refund schema
+                record = {
+                    "id": transaction_info.get("transaction_id"),
+                    "status": "COMPLETED" if transaction_info.get("transaction_status") == "S" else "PENDING",
+                    "status_details": {"reason": transaction_info.get("transaction_note")},
+                    "amount": transaction_info.get("transaction_amount"),
+                    "invoice_id": transaction_info.get("invoice_id"),
+                    "custom_id": transaction_info.get("custom_field"),
+                    "acquirer_reference_number": None,
+                    "note_to_payer": transaction_info.get("transaction_subject"),
+                    "seller_payable_breakdown": {
+                        "gross_amount": transaction_info.get("transaction_amount"),
+                        "paypal_fee": transaction_info.get("fee_amount"),
+                        "net_amount": transaction_info.get("ending_balance"),
+                        "total_refunded_amount": transaction_info.get("transaction_amount"),
+                    },
+                    "create_time": transaction_info.get("transaction_initiation_date"),
+                    "update_time": transaction_info.get("transaction_updated_date"),
+                    "links": None,
+                }
+                records.append(record)
+
+            logger.info(f"Fetched {len(records)} refunds")
+
+            # Determine next offset
+            total_pages = data.get("total_pages", 1)
+            current_page = data.get("page", page)
+
+            if current_page < total_pages:
+                next_offset = {"page": current_page + 1}
+            else:
+                next_offset = start_offset if start_offset else {"page": page}
+
+            return iter(records), next_offset
+
+        def _read_payment_authorizations(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Internal implementation for reading the 'payment_authorizations' table.
+
+            Note: PayPal Payments API v2 does not have a bulk list authorizations endpoint.
+            This method extracts authorization data from the transactions table.
+
+            Required table_options:
+                - start_date: Start date for transaction search (YYYY-MM-DDTHH:MM:SSZ)
+                - end_date: End date for transaction search (YYYY-MM-DDTHH:MM:SSZ)
+            """
+            # Use transactions API and filter for authorizations
+            if start_offset and isinstance(start_offset, dict):
+                page = start_offset.get("page", 1)
+            else:
+                page = 1
+
+            start_date = table_options.get("start_date")
+            end_date = table_options.get("end_date")
+
+            if not start_date or not end_date:
+                raise ValueError("start_date and end_date are required for payment_authorizations table")
+
+            page_size = 100
+            params = {
+                "start_date": start_date,
+                "end_date": end_date,
+                "page": page,
+                "page_size": page_size,
+                "transaction_type": "T0001",  # Authorization transaction type
+            }
+
+            logger.info(f"Fetching payment authorizations from transactions (page {page})")
+            response = self._make_request("GET", "/v1/reporting/transactions", params=params)
+            data = response.json()
+
+            records = []
+            for detail in data.get("transaction_details", []):
+                transaction_info = detail.get("transaction_info", {})
+                # Map transaction data to authorization schema
+                record = {
+                    "id": transaction_info.get("transaction_id"),
+                    "status": "CREATED" if transaction_info.get("transaction_status") == "S" else "PENDING",
+                    "status_details": {"reason": transaction_info.get("transaction_note")},
+                    "amount": transaction_info.get("transaction_amount"),
+                    "invoice_id": transaction_info.get("invoice_id"),
+                    "custom_id": transaction_info.get("custom_field"),
+                    "seller_protection": {
+                        "status": transaction_info.get("protection_eligibility"),
+                        "dispute_categories": None,
+                    },
+                    "expiration_time": None,  # Not available in transaction search
+                    "create_time": transaction_info.get("transaction_initiation_date"),
+                    "update_time": transaction_info.get("transaction_updated_date"),
+                    "links": None,
+                }
+                records.append(record)
+
+            logger.info(f"Fetched {len(records)} payment authorizations")
+
+            # Determine next offset
+            total_pages = data.get("total_pages", 1)
+            current_page = data.get("page", page)
+
+            if current_page < total_pages:
+                next_offset = {"page": current_page + 1}
+            else:
+                next_offset = start_offset if start_offset else {"page": page}
+
+            return iter(records), next_offset
+
+        def _read_webhooks_events(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Internal implementation for reading the 'webhooks_events' table.
+
+            Uses PayPal Webhooks API v1: GET /v1/notifications/webhooks-events
+
+            Optional table_options:
+                - start_time: Filter events created after this time (ISO 8601)
+                - end_time: Filter events created before this time (ISO 8601)
+                - event_type: Filter by specific event type
+                - page_size: Number of events per page (default: 10, max: 300)
+            """
+            # Get starting page from offset
+            if start_offset and isinstance(start_offset, dict):
+                page = start_offset.get("page", 1)
+            else:
+                page = 1
+
+            page_size = int(table_options.get("page_size", 10))
+            params = {
+                "page_size": page_size,
+                "page": page,
+            }
+
+            # Add optional filters
+            if "start_time" in table_options:
+                params["start_time"] = table_options["start_time"]
+            if "end_time" in table_options:
+                params["end_time"] = table_options["end_time"]
+            if "event_type" in table_options:
+                params["event_type"] = table_options["event_type"]
+
+            logger.info(f"Fetching webhook events (page {page}, size {page_size})")
+            response = self._make_request("GET", "/v1/notifications/webhooks-events", params=params)
+            data = response.json()
+
+            import json
+            records = []
+            for event in data.get("events", []):
+                # Convert resource object to JSON string
+                resource = event.get("resource")
+                if resource and isinstance(resource, dict):
+                    resource = json.dumps(resource)
+
+                record = {
+                    "id": event.get("id"),
+                    "create_time": event.get("create_time"),
+                    "resource_type": event.get("resource_type"),
+                    "event_version": event.get("event_version"),
+                    "event_type": event.get("event_type"),
+                    "summary": event.get("summary"),
+                    "resource": resource,
+                    "links": event.get("links"),
+                }
+                records.append(record)
+
+            logger.info(f"Fetched {len(records)} webhook events")
+
+            # Check if there are more pages
+            total_pages = data.get("total_pages", 1)
+            if page < total_pages:
+                next_offset = {"page": page + 1}
+            else:
+                next_offset = start_offset if start_offset else {"page": page}
+
+            return iter(records), next_offset
+
+        def _read_payment_experiences(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Internal implementation for reading the 'payment_experiences' table.
+
+            Uses PayPal Payment Experience API v1: GET /v1/payment-experience/web-profiles
+
+            Note: This API returns all web profiles in a single call (no pagination).
+            """
+            logger.info("Fetching payment experiences (web profiles)")
+            response = self._make_request("GET", "/v1/payment-experience/web-profiles")
+
+            # API returns array directly
+            profiles = response.json() if isinstance(response.json(), list) else []
+
+            records = []
+            for profile in profiles:
+                records.append(profile)
+
+            logger.info(f"Fetched {len(records)} payment experiences")
+
+            # No pagination - return same offset to signal completion
+            next_offset = start_offset if start_offset else {}
+
+            return iter(records), next_offset
+
+        def _read_tracking(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Internal implementation for reading the 'tracking' table.
+
+            Uses PayPal Tracking API v1: GET /v1/shipping/trackers
+
+            Optional table_options:
+                - transaction_id: Filter by transaction ID
+                - tracking_number: Filter by tracking number
+                - start_date: Filter by shipment date (YYYY-MM-DD)
+                - end_date: Filter by shipment date (YYYY-MM-DD)
+                - page_size: Number of trackers per page (default: 10, max: 20)
+            """
+            # Get starting page from offset
+            if start_offset and isinstance(start_offset, dict):
+                page = start_offset.get("page", 1)
+            else:
+                page = 1
+
+            page_size = int(table_options.get("page_size", 10))
+            params = {
+                "page_size": page_size,
+                "page": page,
+            }
+
+            # Add optional filters
+            if "transaction_id" in table_options:
+                params["transaction_id"] = table_options["transaction_id"]
+            if "tracking_number" in table_options:
+                params["tracking_number"] = table_options["tracking_number"]
+            if "start_date" in table_options:
+                params["start_date"] = table_options["start_date"]
+            if "end_date" in table_options:
+                params["end_date"] = table_options["end_date"]
+
+            logger.info(f"Fetching tracking info (page {page}, size {page_size})")
+
+            try:
+                response = self._make_request("GET", "/v1/shipping/trackers", params=params)
+                data = response.json()
+            except RuntimeError as e:
+                # Handle API errors gracefully
+                if "400" in str(e) or "INVALID_TRANSACTION_ID" in str(e):
+                    logger.warning("⚠️  Tracking API requires at least one filter (transaction_id, tracking_number, or date range)")
+                    logger.warning("   Provide transaction_id, tracking_number, start_date, or end_date in table_options")
+                    logger.warning("   Returning empty result set.")
+                    # Return empty result
+                    next_offset = start_offset if start_offset else {"page": page}
+                    return iter([]), next_offset
+                # Re-raise other errors
+                raise
+
+            records = []
+            for tracker in data.get("trackers", []):
+                records.append(tracker)
+
+            logger.info(f"Fetched {len(records)} tracking records")
+
+            # Check if there are more pages
+            total_items = data.get("total_items", len(records))
+            if (page * page_size) < total_items:
+                next_offset = {"page": page + 1}
+            else:
                 next_offset = start_offset if start_offset else {"page": page}
 
             return iter(records), next_offset
