@@ -88,8 +88,11 @@ The PayPal connector supports the following tables:
 
 1. **`transactions`** - Transaction history (fully functional)
 2. **`subscriptions`** - Subscription data (functional - may require plan_id)
+3. **`products`** - Catalog products (fully functional)
+4. **`plans`** - Billing plans (fully functional)
+5. **`payment_captures`** - Payment capture records (fully functional)
 
-**Available Tables**: `transactions`, `subscriptions`
+**Available Tables**: `transactions`, `subscriptions`, `products`, `plans`, `payment_captures`
 
 **Tables Not Included**:
 - **`invoices`** - ❌ **Not Available in Sandbox Environment**. The Invoicing API requires special production-only permissions that are not available with PayPal Sandbox credentials. This table has been removed from the connector.
@@ -225,6 +228,113 @@ The **`orders`** table is **not functional** due to PayPal API limitations.
 **Alternative**: Use the **`transactions`** table instead, which provides comprehensive transaction data including order information, payments, captures, and refunds.
 
 **Schema Defined**: While the schema is defined in the connector for potential future use, attempting to read from this table will return an informative error directing you to use the `transactions` table.
+
+### `products` Table
+
+The **`products`** table provides catalog product data from your PayPal account.
+
+**Primary Key**: `id`
+
+**Incremental Ingestion**:
+- **Strategy**: Change Data Capture (CDC) with update tracking
+- **Cursor Field**: `update_time`
+- **Ingestion Type**: `cdc`
+
+**Optional Table Options**:
+
+| Option | Type | Required | Description | Example |
+|--------|------|----------|-------------|---------|
+| `page_size` | integer | No | Number of products per page (default: 20, max: 20) | `20` |
+
+**Schema Highlights**:
+
+- **`id`** (string, not null): Unique product identifier
+- **`name`** (string): Product name
+- **`description`** (string): Product description
+- **`type`** (string): Product type (e.g., PHYSICAL, DIGITAL, SERVICE)
+- **`category`** (string): Product category
+- **`image_url`** (string): Product image URL
+- **`home_url`** (string): Product home page URL
+- **`create_time`** (string): Product creation timestamp (ISO 8601)
+- **`update_time`** (string): Last update timestamp (ISO 8601)
+- **`links`** (array): HATEOAS links
+
+**Use Case**: Product catalog management, inventory tracking, subscription product setup.
+
+### `plans` Table
+
+The **`plans`** table provides billing plan data for subscriptions.
+
+**Primary Key**: `id`
+
+**Incremental Ingestion**:
+- **Strategy**: Change Data Capture (CDC) with update tracking
+- **Cursor Field**: `update_time`
+- **Ingestion Type**: `cdc`
+
+**Optional Table Options**:
+
+| Option | Type | Required | Description | Example |
+|--------|------|----------|-------------|---------|
+| `product_id` | string | No | Filter by product ID | `"PROD-12345..."` |
+| `plan_ids` | string | No | Comma-separated plan IDs to filter | `"P-123,P-456"` |
+| `page_size` | integer | No | Number of plans per page (default: 20, max: 20) | `20` |
+
+**Schema Highlights**:
+
+- **`id`** (string, not null): Unique plan identifier
+- **`product_id`** (string): Associated product ID
+- **`name`** (string): Plan name
+- **`status`** (string): Plan status (ACTIVE, INACTIVE, CREATED)
+- **`description`** (string): Plan description
+- **`billing_cycles`** (array<struct>): Billing cycle definitions with pricing and frequency
+- **`payment_preferences`** (struct): Payment setup including auto-billing and failure actions
+- **`taxes`** (struct): Tax configuration
+- **`create_time`** (string): Plan creation timestamp (ISO 8601)
+- **`update_time`** (string): Last update timestamp (ISO 8601)
+
+**Use Case**: Subscription plan management, pricing analytics, recurring revenue tracking.
+
+### `payment_captures` Table
+
+The **`payment_captures`** table provides payment capture transaction records.
+
+**Primary Key**: `id`
+
+**Incremental Ingestion**:
+- **Strategy**: Change Data Capture (CDC) with update tracking
+- **Cursor Field**: `update_time`
+- **Ingestion Type**: `cdc`
+
+**Required Table Options**:
+
+| Option | Type | Required | Description | Example |
+|--------|------|----------|-------------|---------|
+| `start_date` | string | Yes | Start of date range in ISO 8601 format (UTC). Must be within the last 3 years. | `"2024-01-01T00:00:00Z"` |
+| `end_date` | string | Yes | End of date range in ISO 8601 format (UTC). Maximum 31-day range from start_date. | `"2024-01-31T23:59:59Z"` |
+| `page_size` | integer | No | Number of captures per page (default: 100, max: 500) | `100` |
+
+**Schema Highlights**:
+
+- **`id`** (string, not null): Unique capture identifier (transaction ID)
+- **`status`** (string): Capture status (COMPLETED, PENDING, DECLINED, etc.)
+- **`status_details`** (struct): Additional status information
+- **`amount`** (struct): Capture amount with currency_code and value
+- **`invoice_id`** (string): Associated invoice ID
+- **`custom_id`** (string): Custom identifier
+- **`seller_protection`** (struct): Seller protection status and dispute categories
+- **`final_capture`** (boolean): Whether this is the final capture for the transaction
+- **`seller_receivable_breakdown`** (struct): Detailed breakdown including gross amount, fees, and net amount
+- **`disbursement_mode`** (string): Disbursement mode (INSTANT, DELAYED)
+- **`create_time`** (string): Capture creation timestamp (ISO 8601)
+- **`update_time`** (string): Last update timestamp (ISO 8601)
+
+**Important Notes**:
+- Uses Transaction Search API to retrieve capture transactions
+- Subject to same 31-day maximum date range and 3-year historical limit as `transactions` table
+- Filters specifically for capture transaction types (T0106)
+
+**Use Case**: Payment reconciliation, revenue tracking, fee analysis, financial reporting.
 
 ## Data Type Mapping
 

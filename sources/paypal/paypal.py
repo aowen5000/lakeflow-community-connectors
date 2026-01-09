@@ -150,7 +150,7 @@ class LakeflowConnect:
         """
         List names of all tables supported by this connector.
         
-        Currently returns: transactions, subscriptions
+        Currently returns: transactions, subscriptions, products, plans, payment_captures
         
         Note: 'invoices' table requires Invoicing API permissions (not available
         with basic sandbox credentials). The table is fully implemented but not 
@@ -159,7 +159,7 @@ class LakeflowConnect:
         Note: 'orders' table is not included because PayPal Orders API v2 
         does not support bulk listing. Use 'transactions' table instead.
         """
-        return ["transactions", "subscriptions"]
+        return ["transactions", "subscriptions", "products", "plans", "payment_captures"]
 
     def get_table_schema(
         self, table_name: str, table_options: dict[str, str]
@@ -474,6 +474,127 @@ class LakeflowConnect:
             
             return orders_schema
 
+        if table_name == "products":
+            # Products schema based on PayPal Catalog Products API v1
+            products_schema = StructType([
+                StructField("id", StringType(), False),
+                StructField("name", StringType(), True),
+                StructField("description", StringType(), True),
+                StructField("type", StringType(), True),
+                StructField("category", StringType(), True),
+                StructField("image_url", StringType(), True),
+                StructField("home_url", StringType(), True),
+                StructField("create_time", StringType(), True),
+                StructField("update_time", StringType(), True),
+                StructField("links", ArrayType(StructType([
+                    StructField("href", StringType(), True),
+                    StructField("rel", StringType(), True),
+                    StructField("method", StringType(), True),
+                ]), True), True),
+            ])
+            
+            return products_schema
+
+        if table_name == "plans":
+            # Billing Plans schema based on PayPal Subscriptions API v1
+            billing_cycle_struct = StructType([
+                StructField("tenure_type", StringType(), True),
+                StructField("sequence", LongType(), True),
+                StructField("total_cycles", LongType(), True),
+                StructField("pricing_scheme", StructType([
+                    StructField("fixed_price", amount_struct, True),
+                    StructField("create_time", StringType(), True),
+                    StructField("update_time", StringType(), True),
+                ]), True),
+                StructField("frequency", StructType([
+                    StructField("interval_unit", StringType(), True),
+                    StructField("interval_count", LongType(), True),
+                ]), True),
+            ])
+            
+            payment_preferences_struct = StructType([
+                StructField("auto_bill_outstanding", BooleanType(), True),
+                StructField("setup_fee", amount_struct, True),
+                StructField("setup_fee_failure_action", StringType(), True),
+                StructField("payment_failure_threshold", LongType(), True),
+            ])
+            
+            taxes_struct = StructType([
+                StructField("percentage", StringType(), True),
+                StructField("inclusive", BooleanType(), True),
+            ])
+            
+            plans_schema = StructType([
+                StructField("id", StringType(), False),
+                StructField("product_id", StringType(), True),
+                StructField("name", StringType(), True),
+                StructField("status", StringType(), True),
+                StructField("description", StringType(), True),
+                StructField("billing_cycles", ArrayType(billing_cycle_struct, True), True),
+                StructField("payment_preferences", payment_preferences_struct, True),
+                StructField("taxes", taxes_struct, True),
+                StructField("quantity_supported", BooleanType(), True),
+                StructField("create_time", StringType(), True),
+                StructField("update_time", StringType(), True),
+                StructField("links", ArrayType(StructType([
+                    StructField("href", StringType(), True),
+                    StructField("rel", StringType(), True),
+                    StructField("method", StringType(), True),
+                ]), True), True),
+            ])
+            
+            return plans_schema
+
+        if table_name == "payment_captures":
+            # Payment Captures schema based on PayPal Payments API v2
+            seller_protection_struct = StructType([
+                StructField("status", StringType(), True),
+                StructField("dispute_categories", ArrayType(StringType(), True), True),
+            ])
+            
+            seller_receivable_breakdown_struct = StructType([
+                StructField("gross_amount", amount_struct, True),
+                StructField("paypal_fee", amount_struct, True),
+                StructField("net_amount", amount_struct, True),
+                StructField("receivable_amount", amount_struct, True),
+                StructField("exchange_rate", StructType([
+                    StructField("source_currency", StringType(), True),
+                    StructField("target_currency", StringType(), True),
+                    StructField("value", StringType(), True),
+                ]), True),
+                StructField("platform_fees", ArrayType(StructType([
+                    StructField("amount", amount_struct, True),
+                    StructField("payee", StructType([
+                        StructField("email_address", StringType(), True),
+                        StructField("merchant_id", StringType(), True),
+                    ]), True),
+                ]), True), True),
+            ])
+            
+            payment_captures_schema = StructType([
+                StructField("id", StringType(), False),
+                StructField("status", StringType(), True),
+                StructField("status_details", StructType([
+                    StructField("reason", StringType(), True),
+                ]), True),
+                StructField("amount", amount_struct, True),
+                StructField("invoice_id", StringType(), True),
+                StructField("custom_id", StringType(), True),
+                StructField("seller_protection", seller_protection_struct, True),
+                StructField("final_capture", BooleanType(), True),
+                StructField("seller_receivable_breakdown", seller_receivable_breakdown_struct, True),
+                StructField("disbursement_mode", StringType(), True),
+                StructField("create_time", StringType(), True),
+                StructField("update_time", StringType(), True),
+                StructField("links", ArrayType(StructType([
+                    StructField("href", StringType(), True),
+                    StructField("rel", StringType(), True),
+                    StructField("method", StringType(), True),
+                ]), True), True),
+            ])
+            
+            return payment_captures_schema
+
         raise ValueError(f"Unsupported table: {table_name!r}")
 
     def read_table_metadata(
@@ -494,8 +615,8 @@ class LakeflowConnect:
 
         if table_name == "transactions":
             return {
-                "primary_keys": ["transaction_info.transaction_id"],
-                "cursor_field": "transaction_info.transaction_initiation_date",
+                "primary_keys": ["transaction_id"],
+                "cursor_field": "transaction_initiation_date",
                 "ingestion_type": "snapshot",
             }
 
@@ -518,6 +639,27 @@ class LakeflowConnect:
                 "primary_keys": ["id"],
                 "cursor_field": "update_time",
                 "ingestion_type": "snapshot",
+            }
+
+        if table_name == "products":
+            return {
+                "primary_keys": ["id"],
+                "cursor_field": "update_time",
+                "ingestion_type": "cdc",
+            }
+
+        if table_name == "plans":
+            return {
+                "primary_keys": ["id"],
+                "cursor_field": "update_time",
+                "ingestion_type": "cdc",
+            }
+
+        if table_name == "payment_captures":
+            return {
+                "primary_keys": ["id"],
+                "cursor_field": "update_time",
+                "ingestion_type": "cdc",
             }
 
         raise ValueError(f"Unsupported table: {table_name!r}")
@@ -550,6 +692,15 @@ class LakeflowConnect:
 
         if table_name == "orders":
             return self._read_orders(start_offset, table_options)
+
+        if table_name == "products":
+            return self._read_products(start_offset, table_options)
+
+        if table_name == "plans":
+            return self._read_plans(start_offset, table_options)
+
+        if table_name == "payment_captures":
+            return self._read_payment_captures(start_offset, table_options)
 
         raise ValueError(f"Unsupported table: {table_name!r}")
 
@@ -872,4 +1023,276 @@ class LakeflowConnect:
             "To retrieve order/payment history, use the 'transactions' table instead, "
             "which provides comprehensive transaction data including order information."
         )
+
+    def _read_products(
+        self, start_offset: dict, table_options: dict[str, str]
+    ) -> (Iterator[dict], dict):
+        """
+        Internal implementation for reading the 'products' table.
+        
+        Uses PayPal Catalog Products API v1: GET /v1/catalogs/products
+        
+        Optional table_options:
+            - page: Page number (default: 1)
+            - page_size: Number of products per page (default: 20, max: 20)
+        """
+        # Get starting page from offset (default 1)
+        if start_offset and isinstance(start_offset, dict):
+            page = start_offset.get("page", 1)
+        else:
+            page = 1
+        
+        # Get page size from options (default 20, max 20)
+        try:
+            page_size = int(table_options.get("page_size", 20))
+        except (TypeError, ValueError):
+            page_size = 20
+        page_size = max(1, min(page_size, 20))
+        
+        # Build query parameters
+        params = {
+            "page": page,
+            "page_size": page_size,
+        }
+        
+        # Make API request
+        response = self._make_request("GET", "/v1/catalogs/products", params)
+        
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"PayPal API error for products: {response.status_code} {response.text}"
+            )
+        
+        data = response.json()
+        
+        # Extract products array
+        products = data.get("products", [])
+        if not isinstance(products, list):
+            raise ValueError(
+                f"Unexpected response format for products: {type(products).__name__}"
+            )
+        
+        # Process records
+        records: list[dict[str, Any]] = []
+        for product in products:
+            records.append(product)
+        
+        # Check for pagination
+        total_items = data.get("total_items", 0)
+        total_pages = data.get("total_pages", 1)
+        
+        # If there are more pages, increment page number
+        if page < total_pages:
+            next_offset = {"page": page + 1}
+        else:
+            # No more pages - return same offset to indicate end of data
+            next_offset = start_offset if start_offset else {"page": page}
+        
+        return iter(records), next_offset
+
+    def _read_plans(
+        self, start_offset: dict, table_options: dict[str, str]
+    ) -> (Iterator[dict], dict):
+        """
+        Internal implementation for reading the 'plans' table.
+        
+        Uses PayPal Subscriptions API v1: GET /v1/billing/plans
+        
+        Optional table_options:
+            - product_id: Filter by product ID
+            - plan_ids: Comma-separated plan IDs to filter
+            - page: Page number (default: 1)
+            - page_size: Number of plans per page (default: 20, max: 20)
+        """
+        # Get starting page from offset (default 1)
+        if start_offset and isinstance(start_offset, dict):
+            page = start_offset.get("page", 1)
+        else:
+            page = 1
+        
+        # Get page size from options (default 20, max 20)
+        try:
+            page_size = int(table_options.get("page_size", 20))
+        except (TypeError, ValueError):
+            page_size = 20
+        page_size = max(1, min(page_size, 20))
+        
+        # Build query parameters
+        params = {
+            "page": page,
+            "page_size": page_size,
+        }
+        
+        # Add optional filters
+        if table_options.get("product_id"):
+            params["product_id"] = table_options["product_id"]
+        if table_options.get("plan_ids"):
+            params["plan_ids"] = table_options["plan_ids"]
+        
+        # Make API request
+        response = self._make_request("GET", "/v1/billing/plans", params)
+        
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"PayPal API error for plans: {response.status_code} {response.text}"
+            )
+        
+        data = response.json()
+        
+        # Extract plans array
+        plans = data.get("plans", [])
+        if not isinstance(plans, list):
+            raise ValueError(
+                f"Unexpected response format for plans: {type(plans).__name__}"
+            )
+        
+        # Process records
+        records: list[dict[str, Any]] = []
+        for plan in plans:
+            records.append(plan)
+        
+        # Check for pagination
+        total_items = data.get("total_items", 0)
+        total_pages = data.get("total_pages", 1)
+        
+        # If there are more pages, increment page number
+        if page < total_pages:
+            next_offset = {"page": page + 1}
+        else:
+            # No more pages - return same offset to indicate end of data
+            next_offset = start_offset if start_offset else {"page": page}
+        
+        return iter(records), next_offset
+
+    def _read_payment_captures(
+        self, start_offset: dict, table_options: dict[str, str]
+    ) -> (Iterator[dict], dict):
+        """
+        Internal implementation for reading the 'payment_captures' table.
+        
+        Uses PayPal Transaction Search API v1 to find captures: GET /v1/reporting/transactions
+        
+        Required table_options:
+            - start_date: Start of date range in ISO 8601 format (UTC)
+            - end_date: End of date range in ISO 8601 format (UTC)
+            
+        Optional table_options:
+            - page_size: Number of captures per page (default: 100, max: 500)
+            
+        Note: This uses the Transaction Search API and filters for capture transactions only.
+        """
+        start_date = table_options.get("start_date")
+        end_date = table_options.get("end_date")
+        
+        if not start_date or not end_date:
+            raise ValueError(
+                "table_options for 'payment_captures' must include 'start_date' and 'end_date' "
+                "in ISO 8601 format (e.g., '2024-01-01T00:00:00Z')"
+            )
+        
+        # Validate date range (PayPal enforces 31-day maximum)
+        try:
+            start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            date_range = (end_dt - start_dt).days
+            
+            if date_range > 31:
+                raise ValueError(
+                    f"Date range exceeds PayPal's 31-day maximum. "
+                    f"Requested range: {date_range} days. "
+                    f"Please split the date range into smaller windows."
+                )
+        except ValueError as e:
+            if "31-day" in str(e):
+                raise
+            raise ValueError(
+                f"Invalid date format. Expected ISO 8601 format "
+                f"(e.g., '2024-01-01T00:00:00Z'): {e}"
+            )
+        
+        # Get page size from options (default 100, max 500)
+        try:
+            page_size = int(table_options.get("page_size", 100))
+        except (TypeError, ValueError):
+            page_size = 100
+        page_size = max(1, min(page_size, 500))
+        
+        # Get starting page from offset (default 1)
+        if start_offset and isinstance(start_offset, dict):
+            page = start_offset.get("page", 1)
+        else:
+            page = 1
+        
+        # Build query parameters
+        params = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "page_size": page_size,
+            "page": page,
+            "transaction_type": "T0106",  # T0106 = Payment capture
+        }
+        
+        # Make API request
+        response = self._make_request("GET", "/v1/reporting/transactions", params)
+        
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"PayPal API error for payment_captures: {response.status_code} {response.text}"
+            )
+        
+        data = response.json()
+        
+        # Extract transaction details array
+        transaction_details = data.get("transaction_details", [])
+        if not isinstance(transaction_details, list):
+            raise ValueError(
+                f"Unexpected response format for transaction_details: "
+                f"{type(transaction_details).__name__}"
+            )
+        
+        # Process records - extract capture information from transactions
+        records: list[dict[str, Any]] = []
+        for txn in transaction_details:
+            transaction_info = txn.get("transaction_info", {}) or {}
+            
+            # Build a capture record from transaction data
+            record: dict[str, Any] = {
+                "id": transaction_info.get("transaction_id"),
+                "status": "COMPLETED" if transaction_info.get("transaction_status") == "S" else "PENDING",
+                "status_details": None,
+                "amount": transaction_info.get("transaction_amount"),
+                "invoice_id": transaction_info.get("invoice_id"),
+                "custom_id": transaction_info.get("custom_field"),
+                "seller_protection": {
+                    "status": transaction_info.get("protection_eligibility"),
+                    "dispute_categories": None,
+                },
+                "final_capture": True,
+                "seller_receivable_breakdown": {
+                    "gross_amount": transaction_info.get("transaction_amount"),
+                    "paypal_fee": transaction_info.get("fee_amount"),
+                    "net_amount": transaction_info.get("ending_balance"),
+                    "receivable_amount": transaction_info.get("transaction_amount"),
+                    "exchange_rate": None,
+                    "platform_fees": None,
+                },
+                "disbursement_mode": "INSTANT",
+                "create_time": transaction_info.get("transaction_initiation_date"),
+                "update_time": transaction_info.get("transaction_updated_date"),
+                "links": None,
+            }
+            records.append(record)
+        
+        # Determine next offset based on pagination metadata
+        total_pages = data.get("total_pages", 1)
+        current_page = data.get("page", page)
+        
+        # If there are more pages, increment page number
+        if current_page < total_pages:
+            next_offset = {"page": current_page + 1}
+        else:
+            # No more pages - return same offset to indicate end of data
+            next_offset = start_offset if start_offset else {"page": page}
+        
+        return iter(records), next_offset
 
