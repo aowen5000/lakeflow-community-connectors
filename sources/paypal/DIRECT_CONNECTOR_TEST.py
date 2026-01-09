@@ -34,10 +34,10 @@ table_options = {
 print(f"\n📋 Testing with {len(subscription_ids)} subscription IDs")
 print("-"*70)
 
-# Call read method directly
+# Call read_table method directly
 print("\n[TEST 1] First call (should return all 5 subscriptions)")
 try:
-    records_iter, next_offset = connector.read("subscriptions", None, table_options)
+    records_iter, next_offset = connector.read_table("subscriptions", None, table_options)
     records = list(records_iter)
     
     print(f"✅ Returned {len(records)} records")
@@ -85,7 +85,7 @@ except Exception as e:
 print("\n" + "-"*70)
 print("[TEST 2] Second call with 'done' offset (should return 0 records)")
 try:
-    records_iter, next_offset = connector.read("subscriptions", {"done": True}, table_options)
+    records_iter, next_offset = connector.read_table("subscriptions", {"done": True}, table_options)
     records = list(records_iter)
     
     print(f"✅ Returned {len(records)} records")
